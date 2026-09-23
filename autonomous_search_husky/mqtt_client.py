@@ -9,7 +9,7 @@ class HuskyMqttNode(Node):
         
         # 1. Configurações do MQTT
         # self.broker_ip = "192.168.134.164"  # IP da sua central
-        self.broker_ip = "150.162.221.46"  # IP da sua central
+        self.broker_ip = "150.162.184.178"  # IP da sua central
         self.broker_port = 1883
         self.mqtt_topic = "husky/vitimas"
         

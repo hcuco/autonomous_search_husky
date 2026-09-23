@@ -25,7 +25,8 @@ setup(
     entry_points={
         'console_scripts': [
             "py_node_cuco = my_py_pkg.my_first_node:main",
-            "mqtt_client = autonomous_search_husky.mqtt_client:main"
+            "mqtt_client = autonomous_search_husky.mqtt_client:main",
+            "mqtt_receiver = autonomous_search_husky.mqtt_receiver:main"
         ],
     },
 )
