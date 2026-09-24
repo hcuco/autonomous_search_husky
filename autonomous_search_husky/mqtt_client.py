@@ -6,14 +6,16 @@ import json
 class HuskyMqttNode(Node):
     def __init__(self):
         super().__init__('husky_mqtt_tester')
+
+        self.declare_parameter("broker_ip", "150.162.184.178")
         
         # 1. Configurações do MQTT
         # self.broker_ip = "192.168.134.164"  # IP da sua central
-        self.broker_ip = "150.162.184.178"  # IP da sua central
+        self.broker_ip = self.get_parameter("broker_ip").value
         self.broker_port = 1883
         self.mqtt_topic = "husky/vitimas"
         
-        self.get_logger().info("Inicializando Cliente MQTT...")
+        self.get_logger().info(f"Inicializando Cliente MQTT no IP: {self.broker_ip}...")
         self.mqtt_client = mqtt.Client()
         
         # Conectando callbacks para monitorar a conexão
