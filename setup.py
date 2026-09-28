@@ -30,7 +30,9 @@ setup(
             "yolo_detector = autonomous_search_husky.yolo_detector:main",
             "victim_localizer = autonomous_search_husky.victim_localizer:main",
             "mqtt_bridge = autonomous_search_husky.mqtt_bridge:main",
-            "mission_manager = autonomous_search_husky.mission_manager:main"
+            "mission_manager = autonomous_search_husky.mission_manager:main",
+            "lidar_test = autonomous_search_husky.lidar_test:main",
+            "teste_yolo = autonomous_search_husky.teste_yolo:main",
         ],
     },
 )
