@@ -24,7 +24,6 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            "py_node_cuco = my_py_pkg.my_first_node:main",
             "mqtt_client = autonomous_search_husky.mqtt_client:main",
             "mqtt_receiver = autonomous_search_husky.mqtt_receiver:main",
             "yolo_detector = autonomous_search_husky.yolo_detector:main",
@@ -33,6 +32,7 @@ setup(
             "mission_manager = autonomous_search_husky.mission_manager:main",
             "lidar_test = autonomous_search_husky.lidar_test:main",
             "teste_yolo = autonomous_search_husky.teste_yolo:main",
+            "victim_localizer_lidar = autonomous_search_husky.victim_localizer_lidar:main",
         ],
     },
 )
