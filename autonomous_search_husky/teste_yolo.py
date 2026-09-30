@@ -18,6 +18,7 @@ from cv_bridge import CvBridge
 # Novos imports para a matemática 3D e Transformações (TF)
 from tf2_ros import Buffer, TransformListener
 import tf2_ros
+import cv2
 
 class PrimeiroTesteNode(Node):
 
@@ -62,7 +63,7 @@ class PrimeiroTesteNode(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         # YOLO prediction model
-        self.model = YOLO("yolov8n.pt")
+        self.model = YOLO("yolov8n-pose.pt")
         self.bridge = CvBridge()
 
         # Publicador Reliability para o RViz
@@ -73,13 +74,15 @@ class PrimeiroTesteNode(Node):
         )
         self.publisher_ = self.create_publisher(Image, "/a200_1077/sensors/camera_YOLO", pub_qos)
 
-        print("Classes detectáveis:", self.model.names) 
+        # print("Classes detectáveis:", self.model.names) 
 
-        class_dict = {value: key for key, value in self.model.names.items()}
-        self.person_id = class_dict.get('person')
-        self.chair_id = class_dict.get('chair')
+        # class_dict = {value: key for key, value in self.model.names.items()}
+        # self.person_id = class_dict.get('person')
+        # self.chair_id = class_dict.get('chair')
 
-        print(f"ID Pessoa: {self.person_id}, ID Cadeira: {self.chair_id}")
+        self.person_id = 0  # ID da classe "person" no modelo YOLOv8-pose
+
+        # print(f"ID Pessoa: {self.person_id}, ID Cadeira: {self.chair_id}")
 
     # Função auxiliar matemática para converter Quaternions (da TF) para Matriz de Rotação
     def quat_to_mat(self, q):
@@ -105,25 +108,28 @@ class PrimeiroTesteNode(Node):
             rgb_image = self.bridge.imgmsg_to_cv2(rgb_msg, desired_encoding="bgr8")
             depth_image = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding="passthrough")
 
+            # 1. Roda o YOLO Pose diretamente na imagem ORIGINAL
             results = self.model.predict(
                 source=rgb_image, 
                 show=False, 
                 conf=0.55, 
-                classes=[self.person_id, self.chair_id], 
+                classes=[self.person_id], # Remova o self.chair_id daqui
                 verbose=False
             )
 
             result = results[0]
 
             for box in result.boxes:
+                # 2. Coordenadas normais, sem rotação
                 x1, y1, x2, y2 = box.xyxy[0].cpu().tolist()
                 confidence = float(box.conf[0])
-                class_id = int(box.cls[0])
-                class_name = result.names[class_id]
+                class_name = "person" # A única classe existente neste modelo
 
+                # 3. Pega o pixel central normal
                 u = int(round((x1 + x2) / 2))
                 v = int(round((y1 + y2) / 2))
 
+                # Impede acesso fora da imagem
                 u = max(0, min(u, depth_image.shape[1] - 1))
                 v = max(0, min(v, depth_image.shape[0] - 1))
 
@@ -140,30 +146,26 @@ class PrimeiroTesteNode(Node):
                 cx = self.camera_info.k[2]
                 cy = self.camera_info.k[5]
 
-                # 1. Matemática da Lente (Frame Óptico)
+                # 4. Matemática da lente clássica com os pixels originais
                 X_opt = (u - cx) * Z / fx
                 Y_opt = (v - cy) * Z / fy
                 Z_opt = Z
 
-                # 2. Converte do padrão da lente para o padrão do Robô (camera_0_link)
-                # Na lente: Z é para frente. No robô: X é para frente.
+                # (O resto da sua matemática de TF permanece inalterada a partir daqui)
                 x_cam = Z_opt
                 y_cam = -X_opt
                 z_cam = -Y_opt
 
-                # 3. Pede ao ROS a distância física entre a câmera e o centro do robô
                 try:
-                    # Se base_link falhar, altere para "a200_1077/robot/base_link" ou "odom"
                     trans = self.tf_buffer.lookup_transform(
-                        "base_link",          # Quero a posição baseada no centro do robô
-                        "camera_0_link",      # A partir da câmera
+                        "base_link",
+                        "camera_0_link",
                         rclpy.time.Time()
                     )
                 except Exception as e:
                     self.get_logger().warning(f"Aguardando a árvore de TF do robô: {e}")
                     continue
 
-                # 4. Projeta as coordenadas para o chão do robô usando matrizes
                 t = trans.transform.translation
                 R = self.quat_to_mat(trans.transform.rotation)
 
@@ -174,16 +176,16 @@ class PrimeiroTesteNode(Node):
                 distancia_2d_chao = np.sqrt(X_base**2 + Y_base**2)
 
                 self.get_logger().info(
-                    f"\n--- {class_name.upper()} DETECTADO ---\n"
+                    f"\n--- {class_name.upper()} DETECTADO (Rotacionado) ---\n"
                     f"Distância real (no chão): {distancia_2d_chao:.2f} m\n"
                     f"Coordenadas de Navegação: X(Frente)={X_base:.2f}m | Y(Lado)={Y_base:.2f}m\n"
                     f"----------------------------"
                 )
             
-            # Imagem processada em array numpy (BGR)
+            # 5. Imagem desenhada virada (Rotacionamos de volta para exibir no RViz)
             annotated_frame = result.plot()
+            # annotated_frame = cv2.rotate(annotated_frame_rotated, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
-            # Bypass do cv_bridge para o YOLO
             output_msg = Image()
             output_msg.header = rgb_msg.header
             output_msg.height = annotated_frame.shape[0]
