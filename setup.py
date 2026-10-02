@@ -33,6 +33,7 @@ setup(
             "lidar_test = autonomous_search_husky.lidar_test:main",
             "teste_yolo = autonomous_search_husky.teste_yolo:main",
             "victim_localizer_lidar = autonomous_search_husky.victim_localizer_lidar:main",
+            "search_algorithm_node = autonomous_search_husky.search_algorithm_node:main",
         ],
     },
 )
