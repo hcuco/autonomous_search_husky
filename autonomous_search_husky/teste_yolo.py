@@ -63,7 +63,7 @@ class PrimeiroTesteNode(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         # YOLO prediction model
-        self.model = YOLO("yolov8n-pose.pt")
+        self.model = YOLO("yolov8n.pt")
         self.bridge = CvBridge()
 
         # Publicador Reliability para o RViz
