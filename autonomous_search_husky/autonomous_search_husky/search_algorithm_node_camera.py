@@ -12,6 +12,7 @@ import threading
 import time
 
 # ros2 run autonomous_search_husky search_algorithm_node_camera --ros-args -p use_sim_time:=true -r /tf:=/a200_1077/tf -r /tf_static:=/a200_1077/tf_static
+# ros2 run autonomous_search_husky search_algorithm_node_camera --ros-args -p use_sim_time:=true -p timeout_missao_segundos:=20.0 -p alcance_camera_m:=6.0 -p fov_camera_deg:=60.0 -p offset_camera_x:=0.3 -r /tf:=/a200_1077/tf -r /tf_static:=/a200_1077/tf_static
 
 
 from tf2_ros import TransformException
@@ -21,6 +22,12 @@ from tf2_ros.transform_listener import TransformListener
 class SearchAlgorithmNode(Node):
     def __init__(self, navigator):
         super().__init__('search_algorithm_node')
+
+        # Configuração de Parâmetros
+        self.declare_parameter("timeout_missao_segundos", 35.0)
+        self.declare_parameter("alcance_camera_m", 1.5)           # Raio (m) para associar detecções à mesma vítima
+        self.declare_parameter("fov_camera_deg", 3.0)         # Meta de confiança acumulada para confirmar
+        self.declare_parameter("offset_camera_x", 0.5) # Deslocamento mínimo (m) para mover a esfera no RViz
 
         self.navigator = navigator
         self.tf_buffer = Buffer()
@@ -37,7 +44,7 @@ class SearchAlgorithmNode(Node):
         
         # SISTEMA ANTI-TRAVAMENTO
         self.tempo_inicio_missao = None
-        self.timeout_missao_segundos = 35.0 
+        self.timeout_missao_segundos = self.get_parameter("timeout_missao_segundos").value   
         self.ultimo_alvo_px = None 
 
         # MATRIZ QUE GUARDA A COBERTURA VISUAL
@@ -46,9 +53,9 @@ class SearchAlgorithmNode(Node):
         # ==========================================
         # CONFIGURAÇÕES FÍSICAS DA CÂMERA
         # ==========================================
-        self.alcance_camera_m = 3.0     
-        self.fov_camera_rad = math.radians(60) 
-        self.offset_camera_x = 0.5    
+        self.alcance_camera_m = self.get_parameter("alcance_camera_m").value     
+        self.fov_camera_rad = math.radians(self.get_parameter("fov_camera_deg").value) 
+        self.offset_camera_x = self.get_parameter("offset_camera_x").value    
 
         # Subscribers
         self.create_subscription(OccupancyGrid, '/a200_1077/map', self.mapa_callback, 10)

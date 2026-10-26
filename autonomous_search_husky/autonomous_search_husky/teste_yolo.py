@@ -22,6 +22,9 @@ from cv_bridge import CvBridge
 from tf2_ros import Buffer, TransformListener
 import tf2_ros
 
+# exemplo de comando para rodar este nó com parâmetros específicos:
+# ros2 run autonomous_search_husky teste_yolo --ros-args -p use_sim_time:=true -p yolo_model:=yolov8n.pt -p global_frame:=map -p robot_namespace:=/a200_1077
+
 class PrimeiroTesteNode(Node):
 
     def __init__(self):
