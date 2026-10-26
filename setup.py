@@ -34,7 +34,7 @@ setup(
             "teste_yolo = autonomous_search_husky.teste_yolo:main",
             "victim_localizer_lidar = autonomous_search_husky.victim_localizer_lidar:main",
             "search_algorithm_node = autonomous_search_husky.search_algorithm_node:main",
-            "victim_manager = autonomous_search_husky.victim_manager:main",
+            "search_algorithm_node_camera = autonomous_search_husky.search_algorithm_node_camera:main"
         ],
     },
 )
