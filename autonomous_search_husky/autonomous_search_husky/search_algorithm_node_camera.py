@@ -24,10 +24,11 @@ class SearchAlgorithmNode(Node):
         super().__init__('search_algorithm_node')
 
         # Configuração de Parâmetros
-        self.declare_parameter("timeout_missao_segundos", 35.0)
-        self.declare_parameter("alcance_camera_m", 1.5)           # Raio (m) para associar detecções à mesma vítima
-        self.declare_parameter("fov_camera_deg", 3.0)         # Meta de confiança acumulada para confirmar
-        self.declare_parameter("offset_camera_x", 0.5) # Deslocamento mínimo (m) para mover a esfera no RViz
+        self.declare_parameter("timeout_missao_segundos", 20.0)
+        self.declare_parameter("alcance_camera_m", 7.0)           # Raio (m) para associar detecções à mesma vítima
+        self.declare_parameter("fov_camera_deg", 60.0)         # Meta de confiança acumulada para confirmar
+        self.declare_parameter("offset_camera_x", 0.3) # Deslocamento mínimo (m) para mover a esfera no RViz
+        self.declare_parameter("limite_distancia_nav", 4.0)
 
         self.navigator = navigator
         self.tf_buffer = Buffer()
@@ -49,6 +50,10 @@ class SearchAlgorithmNode(Node):
 
         # MATRIZ QUE GUARDA A COBERTURA VISUAL
         self.memoria_camera = None
+
+        # --- NOVO: LIMITADOR DE DISTÂNCIA (WAYPOINT INTERMEDIÁRIO) ---
+        # Raio máximo seguro baseado no tamanho padrão de um local costmap do Nav2 (ex: 2.0 a 2.5 metros)
+        self.limite_distancia_nav = self.get_parameter("limite_distancia_nav").value
 
         # ==========================================
         # CONFIGURAÇÕES FÍSICAS DA CÂMERA
@@ -299,15 +304,11 @@ class SearchAlgorithmNode(Node):
         
         self.ultimo_alvo_px = (px, py)
         
-        # --- NOVO: LIMITADOR DE DISTÂNCIA (WAYPOINT INTERMEDIÁRIO) ---
-        # Raio máximo seguro baseado no tamanho padrão de um local costmap do Nav2 (ex: 2.0 a 2.5 metros)
-        limite_distancia_nav = 2.0 
-        
-        if dist > limite_distancia_nav:
+        if dist > self.limite_distancia_nav:
             self.get_logger().info(f"Fronteira distante ({dist:.2f}m). Indo até o limite do mapa local...")
             # Puxa a meta para a extremidade do "local map" na mesma direção da fronteira
-            alvo_x = rx + limite_distancia_nav * math.cos(ang_alvo)
-            alvo_y = ry + limite_distancia_nav * math.sin(ang_alvo)
+            alvo_x = rx + self.limite_distancia_nav * math.cos(ang_alvo)
+            alvo_y = ry + self.limite_distancia_nav * math.sin(ang_alvo)
             
             # Mesmo recuando o alvo X e Y, mantemos o ang_alvo original para o robô olhar para o alvo!
         # --------------------------------------------------------------
