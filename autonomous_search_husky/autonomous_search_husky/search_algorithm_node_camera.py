@@ -13,6 +13,7 @@ import time
 
 # ros2 run autonomous_search_husky search_algorithm_node_camera --ros-args -p use_sim_time:=true -r /tf:=/a200_1077/tf -r /tf_static:=/a200_1077/tf_static
 # ros2 run autonomous_search_husky search_algorithm_node_camera --ros-args -p use_sim_time:=true -p timeout_missao_segundos:=20.0 -p alcance_camera_m:=6.0 -p fov_camera_deg:=60.0 -p offset_camera_x:=0.3 -r /tf:=/a200_1077/tf -r /tf_static:=/a200_1077/tf_static
+# ros2 run autonomous_search_husky search_algorithm_node_camera --ros-args -p use_sim_time:=true -p timeout_missao_segundos:=20.0 -p alcance_camera_m:=8.0 -p fov_camera_deg:=60.0 -p offset_camera_x:=0.3 -p raio_seguranca:=1.0 -r /tf:=/a200_1077/tf -r /tf_static:=/a200_1077/tf_static
 
 
 from tf2_ros import TransformException
@@ -29,6 +30,9 @@ class SearchAlgorithmNode(Node):
         self.declare_parameter("fov_camera_deg", 60.0)         # Meta de confiança acumulada para confirmar
         self.declare_parameter("offset_camera_x", 0.3) # Deslocamento mínimo (m) para mover a esfera no RViz
         self.declare_parameter("limite_distancia_nav", 4.0)
+        self.declare_parameter("raio_seguranca", 1.0)
+        self.declare_parameter("frames_necessarios", 15)
+        self.declare_parameter("area_buraco_max_m2", 1.0)
 
         self.navigator = navigator
         self.tf_buffer = Buffer()
@@ -51,9 +55,18 @@ class SearchAlgorithmNode(Node):
         # MATRIZ QUE GUARDA A COBERTURA VISUAL
         self.memoria_camera = None
 
+        self.tempo_inicio = time.time()
+
         # --- NOVO: LIMITADOR DE DISTÂNCIA (WAYPOINT INTERMEDIÁRIO) ---
         # Raio máximo seguro baseado no tamanho padrão de um local costmap do Nav2 (ex: 2.0 a 2.5 metros)
         self.limite_distancia_nav = self.get_parameter("limite_distancia_nav").value
+
+        # Limite de segurança para o robô não se aproximar de paredes ou obstáculos (em metros)
+        self.raio_seguranca = self.get_parameter("raio_seguranca").value
+
+        # Parametros do mapeamento com câmera
+        self.frames_necessarios = self.get_parameter("frames_necessarios").value
+        self.area_buraco_max_m2 = self.get_parameter("area_buraco_max_m2").value
 
         # ==========================================
         # CONFIGURAÇÕES FÍSICAS DA CÂMERA
@@ -180,6 +193,13 @@ class SearchAlgorithmNode(Node):
         if self.mapa_atual is None or self.memoria_camera is None:
             return
 
+        # ========================================================
+        # INICIALIZAÇÃO LAZY E PARÂMETROS
+        # ========================================================
+        if not hasattr(self, 'contador_exposicao') or self.contador_exposicao.shape != self.memoria_camera.shape:
+            self.contador_exposicao = np.zeros_like(self.memoria_camera, dtype=np.int16)
+        # ========================================================
+
         rx, ry, ryaw = self.get_robot_pose()
 
         if rx is not None:
@@ -200,6 +220,8 @@ class SearchAlgorithmNode(Node):
             ang_inicial = ryaw - self.fov_camera_rad / 2.0
             passo_ang = self.fov_camera_rad / num_raios
 
+            visto_neste_frame = np.zeros_like(self.memoria_camera, dtype=bool)
+
             for i in range(num_raios):
                 ang = ang_inicial + i * passo_ang
                 dx = math.cos(ang)
@@ -212,24 +234,52 @@ class SearchAlgorithmNode(Node):
                     if 0 <= px < w and 0 <= py < h:
                         if grid_slam[py, px] > 50: 
                             break
-                        self.memoria_camera[py, px] = 1
+                        visto_neste_frame[py, px] = True
                     else:
                         break
+
+            self.contador_exposicao[visto_neste_frame] += 1
+            pixels_confirmados = self.contador_exposicao >= self.frames_necessarios
+            self.memoria_camera[pixels_confirmados] = 1
 
             # Sombra para o próprio corpo do robô
             raio_robo_pixels = int(0.7 / res)
             centro_robo = (int((rx - origem_x) / res), int((ry - origem_y) / res))
             cv2.circle(self.memoria_camera, centro_robo, raio_robo_pixels, 1, -1)
 
+            # ========================================================
+            # NOVA LÓGICA: PREENCHIMENTO DE PEQUENOS BURACOS
+            # ========================================================
+            # Converte a área parametrizada de m² para quantidade de pixels
+            area_pixel_m2 = res * res
+            area_maxima_px = int(self.area_buraco_max_m2 / area_pixel_m2)
+
+            # Cria máscara binária onde 1 = áreas não exploradas (0 na memória)
+            mask_nao_explorado = np.uint8(self.memoria_camera == 0)
+            
+            # Encontra todos os "bolsões" conectados de áreas não exploradas
+            num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask_nao_explorado, connectivity=8)
+
+            # Itera sobre os bolsões ignorando o label 0 (que é sempre a maior área/fundo do mapa desconhecido)
+            for i in range(1, num_labels):
+                area_buraco = stats[i, cv2.CC_STAT_AREA]
+                if area_buraco <= area_maxima_px:
+                    # Se o buraco for menor que o limite, marca a região toda como explorada
+                    self.memoria_camera[labels == i] = 1
+                    self.contador_exposicao[labels == i] = self.frames_necessarios
+            # ========================================================
+
         msg = OccupancyGrid()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = self.mapa_atual.header.frame_id
         msg.info = self.mapa_atual.info
+        
         grid_cobertura = np.full(self.memoria_camera.shape, -1, dtype=np.int8)
         grid_cobertura[self.memoria_camera == 1] = 0 
         msg.data = grid_cobertura.flatten().tolist()
+        
         self.cobertura_pub.publish(msg)
-
+        
     # ==========================================
     # LÓGICA DE EXPLORAÇÃO HÍBRIDA (Gira Perto + Proteção contra Parede)
     # ==========================================
@@ -246,8 +296,8 @@ class SearchAlgorithmNode(Node):
         grid = np.array(self.mapa_atual.data).reshape((h, w))
         
         # 1. SEGURANÇA DINÂMICA (Husky tem ~67cm de largura, pedimos 55cm de raio de segurança)
-        raio_seguranca_m = 0.55
-        raio_px = max(1, int(raio_seguranca_m / res))
+
+        raio_px = max(1, int(self.raio_seguranca / res))
         tam_kernel = raio_px * 2 + 1
         
         espaco_livre = np.uint8(grid == 0) * 255
@@ -294,7 +344,9 @@ class SearchAlgorithmNode(Node):
                 fronteiras_validas.append((ax, ay, dist, custo, ang_alvo, int(cx), int(cy)))
 
         if not fronteiras_validas:
-            self.get_logger().info("COBERTURA VISUAL 100% CONCLUÍDA!")
+            tempo_fim = time.time()
+            duracao = tempo_fim - self.tempo_inicio
+            self.get_logger().info(f"COBERTURA VISUAL 100% CONCLUÍDA! (Tempo de cálculo: {duracao:.4f}s)")
             return None
                 
         # 4. ORDENA E TOMA A DECISÃO
@@ -305,12 +357,36 @@ class SearchAlgorithmNode(Node):
         self.ultimo_alvo_px = (px, py)
         
         if dist > self.limite_distancia_nav:
-            self.get_logger().info(f"Fronteira distante ({dist:.2f}m). Indo até o limite do mapa local...")
-            # Puxa a meta para a extremidade do "local map" na mesma direção da fronteira
-            alvo_x = rx + self.limite_distancia_nav * math.cos(ang_alvo)
-            alvo_y = ry + self.limite_distancia_nav * math.sin(ang_alvo)
+            self.get_logger().info(f"Fronteira distante ({dist:.2f}m). Buscando ponto intermediário seguro...")
             
-            # Mesmo recuando o alvo X e Y, mantemos o ang_alvo original para o robô olhar para o alvo!
+            ponto_seguro_encontrado = False
+            dist_teste = self.limite_distancia_nav
+            passo = res # Recua a distância pixel a pixel (baseado na resolução do mapa)
+            
+            # Retrai a distância ao longo do ângulo de visão até achar um ponto livre de obstáculos
+            while dist_teste > 0.4: # Limite mínimo para evitar enviar o alvo para baixo do robô
+                tx = rx + dist_teste * math.cos(ang_alvo)
+                ty = ry + dist_teste * math.sin(ang_alvo)
+                
+                tpx = int((tx - origem_x) / res)
+                tpy = int((ty - origem_y) / res)
+                
+                # Verifica se o pixel projetado está dentro da imagem E se é 100% seguro
+                if 0 <= tpx < w and 0 <= tpy < h:
+                    if livre_seguro[tpy, tpx] == 255:
+                        alvo_x = tx
+                        alvo_y = ty
+                        ponto_seguro_encontrado = True
+                        break
+                
+                dist_teste -= passo # Recua em direção ao robô
+                
+            if not ponto_seguro_encontrado:
+                # Se a reta inteira estiver bloqueada (ex: uma parede muito fina no meio do caminho)
+                self.get_logger().warn("Reta intermediária obstruída! Apenas girando o chassi...")
+                return self.criar_pose(rx, ry, ang_alvo)
+                
+            self.get_logger().info(f"Objetivo intermediário ajustado e validado a {dist_teste:.2f}m.")
         # --------------------------------------------------------------
         
         # Se o alvo está a menos de 60cm, a câmera já consegue ver apenas girando.
