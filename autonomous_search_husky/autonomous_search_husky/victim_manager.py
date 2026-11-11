@@ -6,7 +6,8 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPo
 import math
 
 # exemplo de comando para rodar este nó com parâmetros específicos:
-# ros2 run autonomous_search_husky victim_manager --ros-args -p global_frame:=map -p limiar_confirmacao:=10.0 -p limiar_deslocamento_marker:=0.2
+# ros2 run autonomous_search_husky victim_manager --ros-args -p global_frame:=map -p limiar_confirmacao:=5.0 -p limiar_deslocamento_marker:=0.2
+
 
 class GerenciadorVitimasNode(Node):
     def __init__(self):

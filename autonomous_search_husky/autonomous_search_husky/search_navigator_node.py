@@ -27,7 +27,7 @@ class SearchNavigatorNode(Node):
         super().__init__('search_navigator_node')
 
         self.declare_parameter("timeout_missao_segundos", 20.0)
-        self.declare_parameter("limite_distancia_nav", 4.0)
+        self.declare_parameter("limite_distancia_nav", 6.0)
         self.declare_parameter("raio_seguranca", 1.0)
 
         self.navigator = navigator
@@ -127,7 +127,6 @@ class SearchNavigatorNode(Node):
         if self.mapa_atual is None or self.memoria_camera is None:
             return None
 
-        # Se os mapas estiverem dessincronizados (um cresceu e o outro ainda não atualizou), espera.
         if self.mapa_atual.info.width != self.memoria_camera.shape[1] or self.mapa_atual.info.height != self.memoria_camera.shape[0]:
             return None
 
@@ -140,36 +139,50 @@ class SearchNavigatorNode(Node):
         
         raio_px = max(1, int(self.raio_seguranca / res))
         tam_kernel = raio_px * 2 + 1
+        
+        # CORREÇÃO 1: Kernel CIRCULAR (Elipse) garante que o raio de 
+        # segurança seja de 2.0m em todas as direções (uniforme).
+        kernel_obstaculo = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (tam_kernel, tam_kernel))
+        
         espaco_livre = np.uint8(grid == 0) * 255
         obstaculos = np.uint8(grid >= 50) * 255
         
-        kernel_obstaculo = np.ones((tam_kernel, tam_kernel), np.uint8)
         obstaculos_inflados = cv2.dilate(obstaculos, kernel_obstaculo, iterations=1)
         livre_seguro = cv2.bitwise_and(espaco_livre, cv2.bitwise_not(obstaculos_inflados))
 
-        nao_visto = np.uint8(self.memoria_camera == 0) * 255
-        
-        # Mascara dinamicamente os lugares que deram problema (Bugfix do original)
+        # CORREÇÃO 2: Aplicar o banimento direto no livre_seguro.
+        # Antes o banimento só ocultava a visão, mas permitia metas intermediárias na área.
         for (bx, by, r_px) in self.pontos_banidos:
             bx_px = int((bx - origem_x) / res)
             by_px = int((by - origem_y) / res)
-            cv2.circle(nao_visto, (bx_px, by_px), r_px, 0, -1)
+            cv2.circle(livre_seguro, (bx_px, by_px), r_px, 0, -1)
 
-        matriz_fronteiras = cv2.bitwise_and(livre_seguro, nao_visto)
+        # CORREÇÃO 3: Calcular fronteiras REAIS. Pegamos a borda exata da área 
+        # já vista pela câmera e mantemos apenas as que caem na área livre_segura.
+        # Isso impede que o algoritmo trace falsas fronteiras ao redor de obstáculos.
+        visto = np.uint8(self.memoria_camera == 1) * 255
         kernel_fronteira = np.ones((3, 3), np.uint8)
-        bordas = cv2.morphologyEx(matriz_fronteiras, cv2.MORPH_GRADIENT, kernel_fronteira)
+        borda_visto = cv2.morphologyEx(visto, cv2.MORPH_GRADIENT, kernel_fronteira)
+        bordas = cv2.bitwise_and(borda_visto, livre_seguro)
 
         num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(bordas, connectivity=8)
 
         fronteiras_validas = []
         rx, ry, ryaw = self.get_robot_pose()
         if rx is None: return None
+        
+        rpx = int((rx - origem_x) / res)
+        rpy = int((ry - origem_y) / res)
 
         for i in range(1, num_labels):
             if stats[i, cv2.CC_STAT_AREA] > 5:
                 y_idx, x_idx = np.where(labels == i)
-                ponto_central_idx = len(y_idx) // 2
-                cx, cy = x_idx[ponto_central_idx], y_idx[ponto_central_idx]
+                
+                # CORREÇÃO 4: Em vez de pegar um índice arbitrário (// 2),
+                # calculamos o ponto dessa fronteira que está geometricamente mais acessível ao robô.
+                distancias_sq = (x_idx - rpx)**2 + (y_idx - rpy)**2
+                melhor_idx = np.argmin(distancias_sq)
+                cx, cy = x_idx[melhor_idx], y_idx[melhor_idx]
                 
                 ax = (cx * res) + origem_x
                 ay = (cy * res) + origem_y
@@ -193,11 +206,14 @@ class SearchNavigatorNode(Node):
         self.ultimo_alvo_y = alvo_y
         
         if dist > self.limite_distancia_nav:
-            self.get_logger().info(f"Fronteira distante ({dist:.2f}m). Buscando ponto intermediário...")
+            self.get_logger().info(f"Fronteira distante ({dist:.2f}m). Projetando alvo a {self.limite_distancia_nav}m (dentro do costmap)...")
+            
             ponto_seguro_encontrado = False
+            # Começamos testando a distância máxima permitida
             dist_teste = self.limite_distancia_nav
             passo = res 
             
+            # Vem recuando do limite de 4m até o robô
             while dist_teste > 0.4:
                 tx = rx + dist_teste * math.cos(ang_alvo)
                 ty = ry + dist_teste * math.sin(ang_alvo)
@@ -209,17 +225,55 @@ class SearchNavigatorNode(Node):
                         alvo_x, alvo_y = tx, ty
                         ponto_seguro_encontrado = True
                         break
+                        
                 dist_teste -= passo 
                 
+            # NOVA LÓGICA DE CONTINGÊNCIA: 9m, 8m, 7m, ..., 1m e Banimento
             if not ponto_seguro_encontrado:
-                self.get_logger().warn("Reta intermediária obstruída! Apenas girando o chassi...")
-                return self.criar_pose(rx, ry, ang_alvo)
+                self.get_logger().warn("Projeção de 4m caiu em obstáculos. Acionando contingência de saltos...")
+                
+                if dist <= 9.0:
+                    self.get_logger().info(f"Fronteira original está a {dist:.2f}m (<= 9m). Enviando objetivo bruto do outro lado da barreira.")
+                    # Como está dentro dos 9m, manda o alvo original (Nav2 cuidará da rota passando a barreira)
+                    alvo_x, alvo_y = self.ultimo_alvo_x, self.ultimo_alvo_y
+                else:
+                    self.get_logger().info("Fronteira original > 9m. Tentando novas projeções isoladas a 9m, 8m e 7m...")
+                    
+                    distancias_contingencia = [9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0]
+                    contingencia_resolvida = False
+                    
+                    for d_cont in distancias_contingencia:
+                        dist_t = d_cont
+                        limite_recuo = d_cont - 0.5 # Varre até meio metro para trás em cada marca para não errar por 1 pixel
+                        
+                        while dist_t > limite_recuo:
+                            tx = rx + dist_t * math.cos(ang_alvo)
+                            ty = ry + dist_t * math.sin(ang_alvo)
+                            tpx = int((tx - origem_x) / res)
+                            tpy = int((ty - origem_y) / res)
+                            
+                            if 0 <= tpx < w and 0 <= tpy < h and livre_seguro[tpy, tpx] == 255:
+                                alvo_x, alvo_y = tx, ty
+                                contingencia_resolvida = True
+                                self.get_logger().info(f"Sucesso! Ponto seguro encontrado na projeção de {d_cont}m.")
+                                break
+                            dist_t -= passo
+                            
+                        if contingencia_resolvida:
+                            break
+                            
+                    if not contingencia_resolvida:
+                        self.get_logger().warn("Todas as projeções de salto falharam. Banindo fronteira inalcançável!")
+                        # Oculta essa área com uma esfera de banimento grande (30 pixels)
+                        self.pontos_banidos.append((self.ultimo_alvo_x, self.ultimo_alvo_y, 30))
+                        # Apenas vira de frente pra lá para mapear e abandona
+                        return self.criar_pose(rx, ry, ang_alvo)
                 
         if dist < 0.6:
-            self.get_logger().info("Fronteira muito próxima! Apenas girando o chassi para mapear...")
+            self.get_logger().info("Fronteira muito próxima! Apenas girando o chassi...")
             return self.criar_pose(rx, ry, ang_alvo)
         else:
-            self.get_logger().info(f"Viajando para nova área: X={alvo_x:.2f}, Y={alvo_y:.2f}")
+            self.get_logger().info(f"Viajando para área: X={alvo_x:.2f}, Y={alvo_y:.2f}")
             return self.criar_pose(alvo_x, alvo_y, ang_alvo)
 
     def calcular_espiral(self):
