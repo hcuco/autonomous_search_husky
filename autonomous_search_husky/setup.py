@@ -36,6 +36,8 @@ setup(
             "search_algorithm_node = autonomous_search_husky.search_algorithm_node:main",
             "search_algorithm_node_camera = autonomous_search_husky.search_algorithm_node_camera:main",
             "victim_manager = autonomous_search_husky.victim_manager:main",
+            "map_coverage = autonomous_search_husky.map_coverage_node:main",
+            "search_navigator = autonomous_search_husky.search_navigator_node:main",
         ],
     },
 )

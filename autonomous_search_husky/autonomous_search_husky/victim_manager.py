@@ -97,7 +97,7 @@ class GerenciadorVitimasNode(Node):
             # Ponderação de distância e ângulo de ataque
             fator_distancia = max(0.05, 1.0 - (dist_rel / 6.0))
             fator_angulo = max(0.05, 1.0 - (abs(angulo) / 45.0))
-            fator_confianca = max(0.05, conf))
+            fator_confianca = max(0.05, min(3*(conf - 0.6), 1.0))
             incremento = fator_confianca * fator_distancia * fator_angulo
 
             melhor_vp['confianca_acumulada'] += incremento

@@ -81,6 +81,11 @@ class PrimeiroTesteNode(Node):
 
         class_dict = {value: key for key, value in self.model.names.items()}
         self.person_id = class_dict.get('person')
+        if self.person_id is None:
+            self.person_id = class_dict.get('pessoa')
+            if self.person_id is None:
+                self.get_logger().error("Classe 'person' ou 'pessoa' não encontrada no modelo YOLO.")
+                raise ValueError("Classe 'person' ou 'pessoa' não encontrada no modelo YOLO.")
 
         # Publica a Imagem anotada
         pub_image_qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
@@ -159,8 +164,18 @@ class PrimeiroTesteNode(Node):
                 point_cam = np.array([Z, -X_opt, -Y_opt]) # Z é frente no óptico, X frente no ROS
 
                 try:
-                    trans_base = self.tf_buffer.lookup_transform(self.base_frame, "camera_0_link", rclpy.time.Time())
-                    trans_global = self.tf_buffer.lookup_transform(self.global_frame, "camera_0_link", rclpy.time.Time())
+                    trans_base = self.tf_buffer.lookup_transform(
+                        self.base_frame, 
+                        "camera_0_link", 
+                        rgb_msg.header.stamp,
+                        timeout=rclpy.duration.Duration(seconds=0.1)
+                    )
+                    trans_global = self.tf_buffer.lookup_transform(
+                        self.global_frame, 
+                        "camera_0_link", 
+                        rgb_msg.header.stamp,
+                        timeout=rclpy.duration.Duration(seconds=0.1)
+                    )
                 except Exception as e:
                     continue
 
