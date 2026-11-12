@@ -2,11 +2,13 @@
 import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import OccupancyGrid
+from std_msgs.msg import String
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 
 import numpy as np
 import cv2
 import math
+import json
 
 from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
@@ -19,7 +21,6 @@ class MapCoverageNode(Node):
     def __init__(self):
         super().__init__('map_coverage_node')
 
-        # Parâmetros da Câmera e Mapeamento
         self.declare_parameter("alcance_camera_m", 7.0)
         self.declare_parameter("fov_camera_deg", 60.0)
         self.declare_parameter("offset_camera_x", 0.3)
@@ -38,10 +39,9 @@ class MapCoverageNode(Node):
         self.mapa_atual = None
         self.memoria_camera = None
 
-        # Subscriber do SLAM
         self.create_subscription(OccupancyGrid, '/a200_1077/map', self.mapa_callback, 10)
+        self.create_subscription(String, '/husky/comando_recebido', self.receber_comando, 10)
 
-        # Publisher da Cobertura Visual
         qos_mapa = QoSProfile(
             depth=1,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -49,9 +49,21 @@ class MapCoverageNode(Node):
         )
         self.cobertura_pub = self.create_publisher(OccupancyGrid, '/a200_1077/mapa_cobertura_visual', qos_mapa)
         
-        # Timer de Atualização
         self.create_timer(0.2, self.atualizar_memoria_camera)
         self.get_logger().info("✅ Nó de Cobertura Visual iniciado.")
+
+    def receber_comando(self, msg):
+        try:
+            comando = json.loads(msg.data)
+            acao = comando.get("acao")
+            if acao == "parar_busca":
+                if self.memoria_camera is not None:
+                    self.memoria_camera.fill(0)
+                    if hasattr(self, 'contador_exposicao'):
+                        self.contador_exposicao.fill(0)
+                self.get_logger().info("Comando recebido. Memória visual apagada para reiniciar a exploração.")
+        except json.JSONDecodeError:
+            pass
 
     def mapa_callback(self, msg):
         if self.mapa_atual is None:
@@ -62,7 +74,6 @@ class MapCoverageNode(Node):
         nova_orig = msg.info.origin.position
         res = msg.info.resolution
 
-        # Redimensionamento dinâmico da memória se o mapa do SLAM crescer
         if self.memoria_camera is None:
             self.memoria_camera = np.zeros((novo_h, novo_w), dtype=np.uint8)
         elif self.memoria_camera.shape != (novo_h, novo_w) or \
@@ -84,6 +95,10 @@ class MapCoverageNode(Node):
             
             try:
                 nova_memoria[y_min_n:y_max_n, x_min_n:x_max_n] = self.memoria_camera[y_min_v:y_max_v, x_min_v:x_max_v]
+                if hasattr(self, 'contador_exposicao'):
+                    novo_contador = np.zeros((novo_h, novo_w), dtype=np.int16)
+                    novo_contador[y_min_n:y_max_n, x_min_n:x_max_n] = self.contador_exposicao[y_min_v:y_max_v, x_min_v:x_max_v]
+                    self.contador_exposicao = novo_contador
             except Exception as e:
                 self.get_logger().error(f"Erro ao redimensionar matriz de câmera: {e}")
                 
@@ -152,7 +167,6 @@ class MapCoverageNode(Node):
             centro_robo = (int((rx - origem_x) / res), int((ry - origem_y) / res))
             cv2.circle(self.memoria_camera, centro_robo, raio_robo_pixels, 1, -1)
 
-            # Preenchimento de pequenos buracos
             area_maxima_px = int(self.area_buraco_max_m2 / (res * res))
             mask_nao_explorado = np.uint8(self.memoria_camera == 0)
             num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask_nao_explorado, connectivity=8)
@@ -162,7 +176,6 @@ class MapCoverageNode(Node):
                     self.memoria_camera[labels == i] = 1
                     self.contador_exposicao[labels == i] = self.frames_necessarios
 
-        # Publica o resultado
         msg = OccupancyGrid()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = self.mapa_atual.header.frame_id

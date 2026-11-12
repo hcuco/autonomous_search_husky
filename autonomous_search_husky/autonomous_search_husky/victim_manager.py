@@ -1,9 +1,11 @@
 import rclpy
 from rclpy.node import Node
+from std_msgs.msg import String
 from autonomous_search_msgs.msg import VictimDetection
 from visualization_msgs.msg import Marker
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 import math
+import json
 
 # exemplo de comando para rodar este nó com parâmetros específicos:
 # ros2 run autonomous_search_husky victim_manager --ros-args -p global_frame:=map -p limiar_confirmacao:=5.0 -p limiar_deslocamento_marker:=0.2
@@ -13,12 +15,11 @@ class GerenciadorVitimasNode(Node):
     def __init__(self):
         super().__init__("gerenciador_vitimas")
 
-        # Configuração de Parâmetros
         self.declare_parameter("robot_namespace", "/a200_1077")
-        self.declare_parameter("raio_agrupamento", 1.5)           # Raio (m) para associar detecções à mesma vítima
-        self.declare_parameter("limiar_confirmacao", 3.0)         # Meta de confiança acumulada para confirmar
-        self.declare_parameter("limiar_deslocamento_marker", 0.5) # Deslocamento mínimo (m) para mover a esfera no RViz
-        self.declare_parameter("global_frame", "odom")            # Frame global ('odom' ou 'map')
+        self.declare_parameter("raio_agrupamento", 1.5)           
+        self.declare_parameter("limiar_confirmacao", 3.0)         
+        self.declare_parameter("limiar_deslocamento_marker", 0.5) 
+        self.declare_parameter("global_frame", "odom")            
 
         ns = self.get_parameter("robot_namespace").value
         self.raio_agrupamento = self.get_parameter("raio_agrupamento").value
@@ -33,12 +34,15 @@ class GerenciadorVitimasNode(Node):
         self.vitimas_confirmadas = []
         self.contador_ids = 0
 
-        # Assinatura das detecções customizadas do YOLO
-        self.sub = self.create_subscription(
+        self.sub_detecoes = self.create_subscription(
             VictimDetection, f"{ns}/victim_detections", self.callback_deteccao, 10
         )
+        self.sub_comandos = self.create_subscription(
+            String, "/husky/comando_recebido", self.receber_comando, 10
+        )
+        self.mqtt_vitimas_pub = self.create_publisher(String, '/husky/enviar_vitima', 10)
+        self.create_timer(1.0, self.publicar_lista_mqtt)
         
-        # Publicador de Marcadores com Durabilidade TRANSIENT_LOCAL (Latching)
         marker_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
@@ -53,6 +57,40 @@ class GerenciadorVitimasNode(Node):
             f" - Limiar de Atualização do Marcador: {self.limiar_deslocamento_marker} m"
         )
 
+    def receber_comando(self, msg):
+        try:
+            comando = json.loads(msg.data)
+            acao = comando.get("acao")
+            if acao == "parar_busca":
+                self.vitimas_potenciais.clear()
+                self.vitimas_confirmadas.clear()
+                self.contador_ids = 0
+                self.publicar_lista_mqtt()
+                
+                limpeza_marker = Marker()
+                limpeza_marker.header.frame_id = self.global_frame
+                limpeza_marker.header.stamp = self.get_clock().now().to_msg()
+                limpeza_marker.ns = "vitimas_confirmadas"
+                limpeza_marker.action = Marker.DELETEALL
+                self.marker_pub.publish(limpeza_marker)
+                
+                self.get_logger().info("Comando recebido. Gerenciador de vítimas zerado e marcadores apagados.")
+        except json.JSONDecodeError:
+            pass
+
+    def publicar_lista_mqtt(self):
+        lista_formatada = [
+            {
+                "id": vc["id"],
+                "x": round(vc["marker_x"], 3),
+                "y": round(vc["marker_y"], 3)
+            }
+            for vc in self.vitimas_confirmadas
+        ]
+        msg = String()
+        msg.data = json.dumps({"vitimas": lista_formatada})
+        self.mqtt_vitimas_pub.publish(msg)
+
     def callback_deteccao(self, msg):
         gx = msg.global_x
         gy = msg.global_y
@@ -60,23 +98,20 @@ class GerenciadorVitimasNode(Node):
         dist_rel = msg.dist_rel
         angulo = getattr(msg, 'angle_deg', 0.0)
 
-        # 1. Checa se a detecção pertence a uma vítima JÁ CONFIRMADA
         for vc in self.vitimas_confirmadas:
             dist = math.hypot(gx - vc['x'], gy - vc['y'])
             if dist <= self.raio_agrupamento:
-                # 1.1 Atualiza a posição interna da vítima em tempo real (média móvel)
                 vc['atualizacoes'] += 1
                 vc['x'] = (vc['x'] * (vc['atualizacoes'] - 1) + gx) / vc['atualizacoes']
                 vc['y'] = (vc['y'] * (vc['atualizacoes'] - 1) + gy) / vc['atualizacoes']
 
-                # 1.2 Calcula a distância entre a nova posição interna e a posição visível do marcador no RViz
                 deslocamento = math.hypot(vc['x'] - vc['marker_x'], vc['y'] - vc['marker_y'])
 
-                # 1.3 Se o deslocamento for maior que o limiar estipulado, atualiza o marcador no RViz!
                 if deslocamento >= self.limiar_deslocamento_marker:
                     vc['marker_x'] = vc['x']
                     vc['marker_y'] = vc['y']
                     self.publicar_marcador(vc['id'], vc['marker_x'], vc['marker_y'])
+                    self.publicar_lista_mqtt()
                     self.get_logger().warn(
                         f" Marcador da Vítima {vc['id']} ATUALIZADO no RViz!\n"
                         f" -> Deslocamento detectado: {deslocamento:.2f} m (>= {self.limiar_deslocamento_marker} m)\n"
@@ -84,7 +119,6 @@ class GerenciadorVitimasNode(Node):
                     )
                 return
 
-        # 2. Checa se pertence a uma vítima POTENCIAL em rastreio
         melhor_vp = None
         menor_dist = float('inf')
         
@@ -95,7 +129,6 @@ class GerenciadorVitimasNode(Node):
                 melhor_vp = vp
 
         if melhor_vp is not None:
-            # Ponderação de distância e ângulo de ataque
             fator_distancia = max(0.05, 1.0 - (dist_rel / 6.0))
             fator_angulo = max(0.05, 1.0 - (abs(angulo) / 45.0))
             fator_confianca = max(0.05, min(3*(conf - 0.6), 1.0))
@@ -114,7 +147,6 @@ class GerenciadorVitimasNode(Node):
                     f"Acumulado: {melhor_vp['confianca_acumulada']:.2f}/{self.limiar_confirmacao:.2f}"
                 )
         else:
-            # 3. Registra nova vítima potencial em área inédita
             self.contador_ids += 1
             nova_vp = {
                 'id': self.contador_ids,
@@ -127,7 +159,6 @@ class GerenciadorVitimasNode(Node):
             self.get_logger().info(f"Possível vítima (ID {nova_vp['id']}) avistada. Iniciando acúmulo de confiança...")
 
     def confirmar_vitima(self, vp, dist_rel):
-        # Transfere a vítima para a lista de confirmadas guardando x, y internos e marker_x, marker_y visíveis
         vc = {
             'id': vp['id'],
             'x': vp['x'],
@@ -139,8 +170,8 @@ class GerenciadorVitimasNode(Node):
         self.vitimas_confirmadas.append(vc)
         self.vitimas_potenciais.remove(vp)
         
-        # Publica o marcador inicial no RViz
         self.publicar_marcador(vc['id'], vc['marker_x'], vc['marker_y'])
+        self.publicar_lista_mqtt()
 
         self.get_logger().warn(
             f"\n"
@@ -168,7 +199,7 @@ class GerenciadorVitimasNode(Node):
         marker.color.g = 0.0
         marker.color.b = 0.0
         marker.color.a = 1.0
-        marker.lifetime.sec = 0  # Persiste no RViz
+        marker.lifetime.sec = 0  
         
         self.marker_pub.publish(marker)
 

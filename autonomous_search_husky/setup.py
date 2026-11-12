@@ -32,6 +32,7 @@ setup(
             "victim_manager = autonomous_search_husky.victim_manager:main",
             "map_coverage = autonomous_search_husky.map_coverage_node:main",
             "search_navigator = autonomous_search_husky.search_navigator_node:main",
+            "mqtt_bridge_central = autonomous_search_husky.mqtt_bridge_central:main",
         ],
     },
 )

@@ -34,10 +34,14 @@ class SearchNavigatorNode(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        # Estado interno
+        # Máquina de Estados Interna
         self.algoritmo_atual = "busca_fronteira"
         self.conectado_rede = True
         self.em_missao = False
+        
+        # Flags MQTT
+        self.pausado = True               # Inicia pausado aguardando comando
+        self.reiniciar_solicitado = False # Flag para limpar a memória
         self.mudou_algoritmo = False
         self.voltar_base = False
         self.base_segura_pose = None
@@ -56,17 +60,14 @@ class SearchNavigatorNode(Node):
         self.ultimo_alvo_x = None
         self.ultimo_alvo_y = None
 
-        # CORREÇÃO CRÍTICA: QoS TRANSIENT_LOCAL para mapas no ROS 2
         qos_mapa = QoSProfile(
             depth=1,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
             reliability=ReliabilityPolicy.RELIABLE
         )
 
-        # Subscribers
         self.create_subscription(OccupancyGrid, '/a200_1077/map', self.mapa_callback, qos_mapa)
         self.create_subscription(OccupancyGrid, '/a200_1077/mapa_cobertura_visual', self.cobertura_callback, qos_mapa)
-        
         self.create_subscription(String, '/husky/comando_recebido', self.receber_comando, 10)
         self.create_subscription(Bool, '/status_conexao', self.atualizar_status_rede, 10)
 
@@ -95,15 +96,49 @@ class SearchNavigatorNode(Node):
     def atualizar_status_rede(self, msg):
         estava_conectado = self.conectado_rede
         self.conectado_rede = msg.data
-        if not self.conectado_rede and estava_conectado:
-            self.voltar_base = True
+        # if not self.conectado_rede and estava_conectado:
+        #     self.voltar_base = True
 
     def receber_comando(self, msg):
         try:
             comando = json.loads(msg.data)
-            if comando.get("acao") == "iniciar_busca":
+            acao = comando.get("acao")
+            
+            if acao == "iniciar_busca":
                 self.algoritmo_atual = comando.get("algoritmo", "busca_fronteira")
                 self.mudou_algoritmo = True
+                self.pausado = False
+                self.get_logger().info(f"INICIANDO BUSCA ({self.algoritmo_atual})")
+                
+            elif acao == "parar_busca":
+                self.reiniciar_solicitado = True
+                self.pausado = True
+                self.get_logger().info("PARANDO BUSCA E LIMPANDO MEMÓRIA")
+                
+            elif acao == "pausar":
+                self.pausado = True
+                self.navigator.cancelTask()
+                self.em_missao = False
+                self.get_logger().info("BUSCA PAUSADA")
+                
+            elif acao == "retomar":
+                self.pausado = False
+                self.get_logger().info("BUSCA RETOMADA")
+                
+            elif acao == "voltar_base":
+                self.voltar_base = True
+                self.pausado = False
+                self.get_logger().info("COMANDO: VOLTAR PARA A BASE")
+                
+            elif acao == "ir_para":
+                x = comando.get("x", 0.0)
+                y = comando.get("y", 0.0)
+                self.pausado = True 
+                self.navigator.cancelTask()
+                alvo = self.criar_pose(x, y)
+                self.navigator.goToPose(alvo)
+                self.get_logger().info(f"OVERRIDE MANUAL: X={x}, Y={y}")
+                
         except json.JSONDecodeError:
             pass
 
@@ -136,37 +171,27 @@ class SearchNavigatorNode(Node):
         origem_y = self.mapa_atual.info.origin.position.y
 
         grid = np.array(self.mapa_atual.data).reshape((h, w))
-        
         raio_px = max(1, int(self.raio_seguranca / res))
         tam_kernel = raio_px * 2 + 1
         
-        # CORREÇÃO 1: Kernel CIRCULAR (Elipse) garante que o raio de 
-        # segurança seja de 2.0m em todas as direções (uniforme).
         kernel_obstaculo = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (tam_kernel, tam_kernel))
-        
         espaco_livre = np.uint8(grid == 0) * 255
         obstaculos = np.uint8(grid >= 50) * 255
         
         obstaculos_inflados = cv2.dilate(obstaculos, kernel_obstaculo, iterations=1)
         livre_seguro = cv2.bitwise_and(espaco_livre, cv2.bitwise_not(obstaculos_inflados))
 
-        # CORREÇÃO 2: Aplicar o banimento direto no livre_seguro.
-        # Antes o banimento só ocultava a visão, mas permitia metas intermediárias na área.
         for (bx, by, r_px) in self.pontos_banidos:
             bx_px = int((bx - origem_x) / res)
             by_px = int((by - origem_y) / res)
             cv2.circle(livre_seguro, (bx_px, by_px), r_px, 0, -1)
 
-        # CORREÇÃO 3: Calcular fronteiras REAIS. Pegamos a borda exata da área 
-        # já vista pela câmera e mantemos apenas as que caem na área livre_segura.
-        # Isso impede que o algoritmo trace falsas fronteiras ao redor de obstáculos.
         visto = np.uint8(self.memoria_camera == 1) * 255
         kernel_fronteira = np.ones((3, 3), np.uint8)
         borda_visto = cv2.morphologyEx(visto, cv2.MORPH_GRADIENT, kernel_fronteira)
         bordas = cv2.bitwise_and(borda_visto, livre_seguro)
 
         num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(bordas, connectivity=8)
-
         fronteiras_validas = []
         rx, ry, ryaw = self.get_robot_pose()
         if rx is None: return None
@@ -177,9 +202,7 @@ class SearchNavigatorNode(Node):
         for i in range(1, num_labels):
             if stats[i, cv2.CC_STAT_AREA] > 5:
                 y_idx, x_idx = np.where(labels == i)
-                
-                # CORREÇÃO 4: Em vez de pegar um índice arbitrário (// 2),
-                # calculamos o ponto dessa fronteira que está geometricamente mais acessível ao robô.
+
                 distancias_sq = (x_idx - rpx)**2 + (y_idx - rpy)**2
                 melhor_idx = np.argmin(distancias_sq)
                 cx, cy = x_idx[melhor_idx], y_idx[melhor_idx]
@@ -206,14 +229,11 @@ class SearchNavigatorNode(Node):
         self.ultimo_alvo_y = alvo_y
         
         if dist > self.limite_distancia_nav:
-            self.get_logger().info(f"Fronteira distante ({dist:.2f}m). Projetando alvo a {self.limite_distancia_nav}m (dentro do costmap)...")
-            
+            self.get_logger().info(f"Fronteira distante ({dist:.2f}m). Projetando alvo a {self.limite_distancia_nav}m...")
             ponto_seguro_encontrado = False
-            # Começamos testando a distância máxima permitida
             dist_teste = self.limite_distancia_nav
             passo = res 
             
-            # Vem recuando do limite de 4m até o robô
             while dist_teste > 0.4:
                 tx = rx + dist_teste * math.cos(ang_alvo)
                 ty = ry + dist_teste * math.sin(ang_alvo)
@@ -228,23 +248,18 @@ class SearchNavigatorNode(Node):
                         
                 dist_teste -= passo 
                 
-            # NOVA LÓGICA DE CONTINGÊNCIA: 9m, 8m, 7m, ..., 1m e Banimento
+            # LÓGICA DE CONTINGÊNCIA: 9m, 8m, 7m, ..., 1m e Banimento
             if not ponto_seguro_encontrado:
-                self.get_logger().warn("Projeção de 4m caiu em obstáculos. Acionando contingência de saltos...")
-                
+                self.get_logger().warn(f"Projeção de {self.limite_distancia_nav}m falhou. Acionando contingência...")
                 if dist <= 9.0:
-                    self.get_logger().info(f"Fronteira original está a {dist:.2f}m (<= 9m). Enviando objetivo bruto do outro lado da barreira.")
-                    # Como está dentro dos 9m, manda o alvo original (Nav2 cuidará da rota passando a barreira)
                     alvo_x, alvo_y = self.ultimo_alvo_x, self.ultimo_alvo_y
                 else:
-                    self.get_logger().info("Fronteira original > 9m. Tentando novas projeções isoladas a 9m, 8m e 7m...")
-                    
                     distancias_contingencia = [9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0]
                     contingencia_resolvida = False
                     
                     for d_cont in distancias_contingencia:
                         dist_t = d_cont
-                        limite_recuo = d_cont - 0.5 # Varre até meio metro para trás em cada marca para não errar por 1 pixel
+                        limite_recuo = d_cont - 0.5 
                         
                         while dist_t > limite_recuo:
                             tx = rx + dist_t * math.cos(ang_alvo)
@@ -255,7 +270,6 @@ class SearchNavigatorNode(Node):
                             if 0 <= tpx < w and 0 <= tpy < h and livre_seguro[tpy, tpx] == 255:
                                 alvo_x, alvo_y = tx, ty
                                 contingencia_resolvida = True
-                                self.get_logger().info(f"Sucesso! Ponto seguro encontrado na projeção de {d_cont}m.")
                                 break
                             dist_t -= passo
                             
@@ -263,10 +277,8 @@ class SearchNavigatorNode(Node):
                             break
                             
                     if not contingencia_resolvida:
-                        self.get_logger().warn("Todas as projeções de salto falharam. Banindo fronteira inalcançável!")
-                        # Oculta essa área com uma esfera de banimento grande (30 pixels)
+                        self.get_logger().warn("Todas as contingências falharam. Banindo fronteira inalcançável!")
                         self.pontos_banidos.append((self.ultimo_alvo_x, self.ultimo_alvo_y, 30))
-                        # Apenas vira de frente pra lá para mapear e abandona
                         return self.criar_pose(rx, ry, ang_alvo)
                 
         if dist < 0.6:
@@ -284,14 +296,32 @@ class SearchNavigatorNode(Node):
 
     def control_loop_step(self):
         if self.mapa_atual is None or self.memoria_camera is None:
-            self.get_logger().warn("⏳ Aguardando tópico de mapa e de cobertura visual...", throttle_duration_sec=3.0)
+            self.get_logger().warn("Aguardando tópico de mapa e de cobertura visual...", throttle_duration_sec=3.0)
             return
 
+        # 1. TRATA PEDIDO DE RESET/LIMPEZA (Parar Busca)
+        if self.reiniciar_solicitado:
+            self.get_logger().info("Limpando memória de navegação...")
+            self.navigator.cancelTask()
+            self.em_missao = False
+            self.pontos_banidos.clear()
+            self.tempo_inicio = time.time()
+            self.ultimo_alvo_x = None
+            self.ultimo_alvo_y = None
+            self.reiniciar_solicitado = False
+            return
+
+        # 2. CONGELA O LOOP SE ESTIVER PAUSADO
+        if self.pausado:
+            return
+
+        # 3. TRATA COMANDO DE RETORNAR PARA BASE
         if self.voltar_base and self.base_segura_pose:
             self.navigator.cancelTask()
             self.navigator.goToPose(self.base_segura_pose)
             self.em_missao = True
             self.voltar_base = False
+            self.algoritmo_atual = "base" 
             return
 
         if self.mudou_algoritmo and self.conectado_rede:
@@ -300,22 +330,28 @@ class SearchNavigatorNode(Node):
             self.mudou_algoritmo = False
             return
 
+        # 4. GERENCIA A MISSÃO EM ANDAMENTO
         if self.em_missao:
             agora = self.get_clock().now()
             tempo_decorrido = (agora - self.tempo_inicio_missao).nanoseconds / 1e9
             
             if tempo_decorrido > self.timeout_missao_segundos:
-                self.get_logger().warn("⚠️ Timeout! Abortando e banindo esta área...")
+                self.get_logger().warn("Timeout! Abortando...")
                 self.navigator.cancelTask()
                 self.em_missao = False
-                if self.ultimo_alvo_x is not None:
-                    self.pontos_banidos.append((self.ultimo_alvo_x, self.ultimo_alvo_y, 15))
                 return
 
             if self.navigator.isTaskComplete():
                 resultado = self.navigator.getResult()
+                
+                if self.algoritmo_atual == "base":
+                    self.get_logger().info("Robô chegou na base. Entrando em modo Pausa.")
+                    self.pausado = True
+                    self.em_missao = False
+                    return
+
                 if resultado != TaskResult.SUCCEEDED:
-                    self.get_logger().warn(f"❌ Nav2 falhou/abortou. Banindo esta área problemática...")
+                    self.get_logger().warn(f"❌ Nav2 falhou/abortou. Banindo área problemática...")
                     if self.ultimo_alvo_x is not None:
                         self.pontos_banidos.append((self.ultimo_alvo_x, self.ultimo_alvo_y, 25))
                 else:
@@ -323,6 +359,7 @@ class SearchNavigatorNode(Node):
                 self.em_missao = False
             return
 
+        # 5. INICIA NOVA MISSÃO DE EXPLORAÇÃO
         if not self.em_missao and self.conectado_rede:
             alvo = None
             if self.algoritmo_atual == "busca_fronteira":
@@ -336,7 +373,6 @@ class SearchNavigatorNode(Node):
                 self.navigator.goToPose(alvo)
                 self.tempo_inicio_missao = self.get_clock().now()
                 self.em_missao = True
-
 
 def main(args=None):
     rclpy.init(args=args)
@@ -353,7 +389,7 @@ def main(args=None):
     spin_thread = threading.Thread(target=executor.spin, daemon=True)
     spin_thread.start()
 
-    node_search.get_logger().info("✅ Nó de Busca e Navegação iniciado.")
+    node_search.get_logger().info("✅ Nó de Busca e Navegação iniciado. Aguardando comandos MQTT...")
 
     try:
         while rclpy.ok():
