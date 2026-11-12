@@ -14,6 +14,7 @@ import cv2
 import math
 import threading
 import time
+import random
 
 from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
@@ -292,7 +293,138 @@ class SearchNavigatorNode(Node):
         return self.criar_pose(1.5, -1.5)
 
     def calcular_aleatorio(self):
-        return self.criar_pose(float(np.random.uniform(0.0, 3.0)), float(np.random.uniform(-3.0, 3.0)))
+        if self.mapa_atual is None or self.memoria_camera is None:
+            return None
+
+        if self.mapa_atual.info.width != self.memoria_camera.shape[1] or self.mapa_atual.info.height != self.memoria_camera.shape[0]:
+            return None
+
+        # --- 1. Inicializa a memória da meta global (se ainda não existir) ---
+        if not hasattr(self, 'meta_global_x'):
+            self.meta_global_x = None
+            self.meta_global_y = None
+
+        w, h = self.mapa_atual.info.width, self.mapa_atual.info.height
+        res = self.mapa_atual.info.resolution
+        origem_x = self.mapa_atual.info.origin.position.x
+        origem_y = self.mapa_atual.info.origin.position.y
+
+        grid = np.array(self.mapa_atual.data).reshape((h, w))
+        
+        raio_px = max(1, int(self.raio_seguranca / res))
+        tam_kernel = raio_px * 2 + 1
+        espaco_livre = np.uint8(grid == 0) * 255
+        obstaculos = np.uint8(grid >= 50) * 255
+        
+        kernel_obstaculo = np.ones((tam_kernel, tam_kernel), np.uint8)
+        obstaculos_inflados = cv2.dilate(obstaculos, kernel_obstaculo, iterations=1)
+        livre_seguro = cv2.bitwise_and(espaco_livre, cv2.bitwise_not(obstaculos_inflados))
+
+        nao_visto = np.uint8(self.memoria_camera == 0) * 255
+        
+        for (bx, by, r_px) in self.pontos_banidos:
+            bx_px = int((bx - origem_x) / res)
+            by_px = int((by - origem_y) / res)
+            cv2.circle(nao_visto, (bx_px, by_px), r_px, 0, -1)
+
+        rx, ry, ryaw = self.get_robot_pose()
+        if rx is None: return None
+
+        usando_meta_global = False
+
+        # --- 2. Verifica se já temos uma Meta Global ativa e distante ---
+        if self.meta_global_x is not None:
+            dist_ate_global = math.hypot(self.meta_global_x - rx, self.meta_global_y - ry)
+            
+            if dist_ate_global < 0.6:
+                # Chegou na meta (ou muito perto), limpa para sortear uma nova
+                self.get_logger().info("Meta global alcançada! Buscando nova fronteira...")
+                self.meta_global_x = None
+                self.meta_global_y = None
+            else:
+                # Continua focado na meta antiga
+                alvo_x = self.meta_global_x
+                alvo_y = self.meta_global_y
+                dist = dist_ate_global
+                ang_alvo = math.atan2(alvo_y - ry, alvo_x - rx)
+                usando_meta_global = True
+                self.get_logger().info(f"Retomando meta global distante em X={alvo_x:.2f}, Y={alvo_y:.2f}")
+
+        # --- 3. Só procura novas fronteiras e faz o sorteio se não tiver meta global ---
+        if not usando_meta_global:
+            matriz_fronteiras = cv2.bitwise_and(livre_seguro, nao_visto)
+            kernel_fronteira = np.ones((3, 3), np.uint8)
+            bordas = cv2.morphologyEx(matriz_fronteiras, cv2.MORPH_GRADIENT, kernel_fronteira)
+
+            num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(bordas, connectivity=8)
+            fronteiras_validas = []
+
+            for i in range(1, num_labels):
+                if stats[i, cv2.CC_STAT_AREA] > 5:
+                    y_idx, x_idx = np.where(labels == i)
+                    ponto_central_idx = len(y_idx) // 2
+                    cx, cy = x_idx[ponto_central_idx], y_idx[ponto_central_idx]
+                    
+                    ax = (cx * res) + origem_x
+                    ay = (cy * res) + origem_y
+                    dist_fronteira = math.hypot(ax - rx, ay - ry)
+                    ang_fronteira = math.atan2(ay - ry, ax - rx)
+                    
+                    diff_ang = abs((ang_fronteira - ryaw + math.pi) % (2 * math.pi) - math.pi)
+                    custo = dist_fronteira + (diff_ang * 1.5) 
+                    
+                    fronteiras_validas.append((ax, ay, dist_fronteira, custo, ang_fronteira))
+
+            if not fronteiras_validas:
+                duracao = time.time() - self.tempo_inicio
+                self.get_logger().info(f"COBERTURA VISUAL 100% CONCLUÍDA! (Tempo: {duracao:.4f}s)")
+                return None
+
+            # Sorteia uma nova e salva como a nova Meta Global
+            alvo_x, alvo_y, dist, _, ang_alvo = random.choice(fronteiras_validas)
+            self.meta_global_x = alvo_x
+            self.meta_global_y = alvo_y
+
+        # --- 4. Submetas (corte da distância). Funciona tanto para global quanto para nova ---
+        self.ultimo_alvo_x = alvo_x
+        self.ultimo_alvo_y = alvo_y
+        
+        if dist > self.limite_distancia_nav:
+            self.get_logger().info(f"Fronteira distante ({dist:.2f}m). Buscando ponto intermediário...")
+            ponto_seguro_encontrado = False
+            dist_teste = self.limite_distancia_nav
+            passo = res 
+            
+            while dist_teste > 0.4:
+                tx = rx + dist_teste * math.cos(ang_alvo)
+                ty = ry + dist_teste * math.sin(ang_alvo)
+                tpx = int((tx - origem_x) / res)
+                tpy = int((ty - origem_y) / res)
+                
+                if 0 <= tpx < w and 0 <= tpy < h:
+                    if livre_seguro[tpy, tpx] == 255:
+                        alvo_x, alvo_y = tx, ty
+                        ponto_seguro_encontrado = True
+                        break
+                dist_teste -= passo 
+                
+            if not ponto_seguro_encontrado:
+                # IMPORTANTE: Se o caminho estiver bloqueado, precisamos resetar a meta global
+                # para que ele não fique travado tentando ir pro mesmo lugar bloqueado para sempre.
+                self.get_logger().warn("Reta intermediária obstruída! Cancelando meta global e girando...")
+                self.meta_global_x = None
+                self.meta_global_y = None
+                return self.criar_pose(rx, ry, ang_alvo)
+                
+        if dist < 0.6:
+            self.get_logger().info("Fronteira muito próxima! Apenas girando o chassi para mapear...")
+            # Limpamos a meta global aqui também para garantir
+            self.meta_global_x = None
+            self.meta_global_y = None
+            return self.criar_pose(rx, ry, ang_alvo)
+        else:
+            self.get_logger().info(f"Viajando para sub-meta: X={alvo_x:.2f}, Y={alvo_y:.2f}")
+            return self.criar_pose(alvo_x, alvo_y, ang_alvo)
 
     def control_loop_step(self):
         if self.mapa_atual is None or self.memoria_camera is None:
