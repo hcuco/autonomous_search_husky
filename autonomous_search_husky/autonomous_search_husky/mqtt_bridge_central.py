@@ -42,6 +42,10 @@ class MqttBridgeCentralNode(Node):
         self.mqtt_client.on_connect = self.on_connect
         self.mqtt_client.on_message = self.on_message
         
+        # [MODIFICAÇÃO] Reconexão rápida caso o broker (Mosquitto) seja reiniciado.
+        # Por padrão, o paho espaça as tentativas de reconexão até 120 s.
+        self.mqtt_client.reconnect_delay_set(min_delay=1, max_delay=5)
+        
         self.mqtt_client.connect_async(self.broker_ip, self.broker_port, 10)
         self.mqtt_client.loop_start()
 
@@ -129,31 +133,33 @@ class MqttBridgeCentralNode(Node):
         
         marker_array = MarkerArray()
         
-        if not vitimas:
-            # Lista vazia = Apagar todos os marcadores da tela
+        # [MODIFICAÇÃO] Como o robô envia a lista COMPLETA de vítimas periodicamente, todos os marcadores
+        # são apagados antes de redesenhar. Antes, eles só eram apagados com a lista vazia, e uma vítima
+        # que saísse da lista (ex.: duplicadas unificadas ou id alterado) continuava aparecendo no RViz.
+        apagar = Marker()
+        apagar.header.frame_id = 'map'
+        apagar.ns = 'vitimas_confirmadas'
+        apagar.action = Marker.DELETEALL
+        marker_array.markers.append(apagar)
+        
+        # Cria uma esfera vermelha para cada vítima
+        for v in vitimas:
             m = Marker()
             m.header.frame_id = 'map'
-            m.action = Marker.DELETEALL
+            m.ns = 'vitimas_confirmadas'
+            m.id = int(v['id'])  # [MODIFICAÇÃO] garante id inteiro, exigido pelo Marker
+            m.type = Marker.SPHERE
+            m.action = Marker.ADD
+            m.pose.position.x = float(v['x'])
+            m.pose.position.y = float(v['y'])
+            m.pose.position.z = 0.3  # Fica um pouco acima do chão
+            m.pose.orientation.w = 1.0
+            m.scale.x = 0.6
+            m.scale.y = 0.6
+            m.scale.z = 0.6
+            m.color.r = 1.0
+            m.color.a = 1.0 # 100% visível (não transparente)
             marker_array.markers.append(m)
-        else:
-            # Cria uma esfera vermelha para cada vítima
-            for v in vitimas:
-                m = Marker()
-                m.header.frame_id = 'map'
-                m.ns = 'vitimas_confirmadas'
-                m.id = v['id']
-                m.type = Marker.SPHERE
-                m.action = Marker.ADD
-                m.pose.position.x = float(v['x'])
-                m.pose.position.y = float(v['y'])
-                m.pose.position.z = 0.3  # Fica um pouco acima do chão
-                m.pose.orientation.w = 1.0
-                m.scale.x = 0.6
-                m.scale.y = 0.6
-                m.scale.z = 0.6
-                m.color.r = 1.0
-                m.color.a = 1.0 # 100% visível (não transparente)
-                marker_array.markers.append(m)
                 
         self.victims_pub.publish(marker_array)
 
