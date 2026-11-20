@@ -60,7 +60,7 @@ launch:
   # Argumentos - Navegação Autônoma
   - arg:
       name: "raio_seguranca"
-      default: "1.0"
+      default: "2.0"
       description: "Raio de segurança em relação aos obstáculos (m)"
 
   - arg:

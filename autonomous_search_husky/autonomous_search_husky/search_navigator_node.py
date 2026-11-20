@@ -4,7 +4,7 @@ from rclpy.node import Node
 from rclpy.executors import SingleThreadedExecutor
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 from geometry_msgs.msg import PoseStamped
-from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import OccupancyGrid, Path
 from std_msgs.msg import String, Bool
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 
@@ -15,12 +15,14 @@ import math
 import threading
 import time
 import random
+import csv
+import os
 
 from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 
-# ros2 run autonomous_search_husky search_navigator --ros-args -p use_sim_time:=true -p timeout_missao_segundos:=20.0 -p raio_seguranca:=1.0 -r /tf:=/a200_1077/tf -r /tf_static:=/a200_1077/tf_static
+# ros2 run autonomous_search_husky search_navigator --ros-args -p use_sim_time:=true -p timeout_missao_segundos:=20.0 -p raio_seguranca:=2.0 -r /tf:=/a200_1077/tf -r /tf_static:=/a200_1077/tf_static
 
 
 class SearchNavigatorNode(Node):
@@ -29,8 +31,11 @@ class SearchNavigatorNode(Node):
 
         self.declare_parameter("timeout_missao_segundos", 20.0)
         self.declare_parameter("limite_distancia_nav", 6.0)
-        self.declare_parameter("raio_seguranca", 1.0)
-
+        self.declare_parameter("raio_seguranca", 2.0)
+        self.declare_parameter("largura_faixa_zigzag", 5.0)
+        self.declare_parameter("max_faixas_zigzag", 30)
+        self.declare_parameter("parar_por_cobertura_visual", True)
+        
         self.navigator = navigator
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -50,6 +55,9 @@ class SearchNavigatorNode(Node):
         self.timeout_missao_segundos = self.get_parameter("timeout_missao_segundos").value
         self.limite_distancia_nav = self.get_parameter("limite_distancia_nav").value
         self.raio_seguranca = self.get_parameter("raio_seguranca").value
+        self.largura_faixa_zigzag = self.get_parameter("largura_faixa_zigzag").value
+        self.max_faixas_zigzag = self.get_parameter("max_faixas_zigzag").value
+        self.parar_por_cobertura_visual = self.get_parameter("parar_por_cobertura_visual").value
 
         self.tempo_inicio_missao = None
         self.tempo_inicio = time.time()
@@ -60,6 +68,41 @@ class SearchNavigatorNode(Node):
         self.pontos_banidos = []
         self.ultimo_alvo_x = None
         self.ultimo_alvo_y = None
+
+        self.exploracao_concluida = False
+        self.zigzag_concluido = False
+
+        # --- REGISTRO DE TRAJETÓRIA (RViz2 + CSV) ---
+        qos_path = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL
+        )
+
+        # Tópico único com toda a trajetória da sessão
+        self.path_pub_geral = self.create_publisher(Path, '/a200_1077/trajetoria_geral', qos_path)
+        self.path_geral = Path()
+        self.path_geral.header.frame_id = 'map'
+
+        # Tópicos separados por algoritmo (para colorir diferente no RViz2)
+        self.pubs_path_algoritmo = {}
+        self.paths_algoritmo = {}
+        for alg in ['busca_fronteira', 'busca_zigzag', 'busca_espiral', 'busca_aleatorio']:
+            self.pubs_path_algoritmo[alg] = self.create_publisher(
+                Path, f'/a200_1077/trajetoria/{alg}', qos_path
+            )
+            p = Path()
+            p.header.frame_id = 'map'
+            self.paths_algoritmo[alg] = p
+
+        self.ultimo_ponto_traj = None
+        self.distancia_total_percorrida = 0.0
+
+        # Arquivo CSV para análise/gráficos posteriores
+        caminho_csv = os.path.expanduser('~/pe_husky/historico_trajetorias.csv')
+        self.arquivo_csv = open(caminho_csv, mode='w', newline='')
+        self.csv_writer = csv.writer(self.arquivo_csv)
+        self.csv_writer.writerow(['tempo_s', 'algoritmo', 'x', 'y', 'yaw', 'distancia_acumulada_m'])
 
         qos_mapa = QoSProfile(
             depth=1,
@@ -82,6 +125,47 @@ class SearchNavigatorNode(Node):
         pose.pose.orientation.z = float(math.sin(yaw / 2.0))
         pose.pose.orientation.w = float(math.cos(yaw / 2.0))
         return pose
+
+    def registrar_trajetoria(self):
+        rx, ry, ryaw = self.get_robot_pose()
+        if rx is None:
+            return
+
+        # Só registra novo ponto se o robô andou pelo menos 15 cm (evita acúmulo parado)
+        if self.ultimo_ponto_traj is not None:
+            dist_passo = math.hypot(rx - self.ultimo_ponto_traj[0], ry - self.ultimo_ponto_traj[1])
+            if dist_passo < 0.15:
+                return
+            self.distancia_total_percorrida += dist_passo
+
+        self.ultimo_ponto_traj = (rx, ry)
+        agora = self.get_clock().now().to_msg()
+        pose_atual = self.criar_pose(rx, ry, ryaw)
+        pose_atual.header.stamp = agora
+
+        # 1. Atualiza e publica a trajetória geral
+        self.path_geral.header.stamp = agora
+        self.path_geral.poses.append(pose_atual)
+        self.path_pub_geral.publish(self.path_geral)
+
+        # 2. Atualiza e publica a trajetória específica do algoritmo ativo
+        alg = getattr(self, 'algoritmo_atual', 'busca_fronteira')
+        if alg in self.paths_algoritmo:
+            self.paths_algoritmo[alg].header.stamp = agora
+            self.paths_algoritmo[alg].poses.append(pose_atual)
+            self.pubs_path_algoritmo[alg].publish(self.paths_algoritmo[alg])
+
+        # 3. Grava no CSV para gráficos/métricas
+        tempo_decorrido = time.time() - getattr(self, 'tempo_inicio', time.time())
+        self.csv_writer.writerow([
+            f'{tempo_decorrido:.2f}',
+            alg,
+            f'{rx:.3f}',
+            f'{ry:.3f}',
+            f'{ryaw:.3f}',
+            f'{self.distancia_total_percorrida:.3f}'
+        ])
+        self.arquivo_csv.flush()
 
     def mapa_callback(self, msg):
         self.mapa_atual = msg
@@ -290,7 +374,253 @@ class SearchNavigatorNode(Node):
             return self.criar_pose(alvo_x, alvo_y, ang_alvo)
 
     def calcular_zigzag(self):
-        return self.criar_pose(1.5, -1.5)
+        if getattr(self, 'zigzag_concluido', False):
+            return None
+
+        if self.mapa_atual is None or self.memoria_camera is None:
+            return None
+
+        if self.mapa_atual.info.width != self.memoria_camera.shape[1] or self.mapa_atual.info.height != self.memoria_camera.shape[0]:
+            return None
+
+        rx, ry, ryaw = self.get_robot_pose()
+        if rx is None:
+            return None
+
+        w, h = self.mapa_atual.info.width, self.mapa_atual.info.height
+        res = self.mapa_atual.info.resolution
+        origem_x = self.mapa_atual.info.origin.position.x
+        origem_y = self.mapa_atual.info.origin.position.y
+
+        # 1. MÁSCARA DE SEGURANÇA
+        grid = np.array(self.mapa_atual.data).reshape((h, w))
+        raio_px = max(1, int(self.raio_seguranca / res))
+        tam_kernel = raio_px * 2 + 1
+
+        kernel_obstaculo = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (tam_kernel, tam_kernel))
+        espaco_livre = np.uint8(grid == 0) * 255
+        obstaculos = np.uint8(grid >= 50) * 255
+
+        obstaculos_inflados = cv2.dilate(obstaculos, kernel_obstaculo, iterations=1)
+        livre_seguro = cv2.bitwise_and(espaco_livre, cv2.bitwise_not(obstaculos_inflados))
+
+        for (bx, by, r_px) in self.pontos_banidos:
+            bx_px = int((bx - origem_x) / res)
+            by_px = int((by - origem_y) / res)
+            cv2.circle(livre_seguro, (bx_px, by_px), r_px, 0, -1)
+
+        y_livres, x_livres = np.where(livre_seguro == 255)
+        if len(x_livres) == 0:
+            self.get_logger().warn("Nenhuma área livre segura encontrada. Encerrando Zig-Zag.")
+            self.zigzag_concluido = True
+            return None
+
+        min_x = (np.min(x_livres) * res) + origem_x
+        max_x = (np.max(x_livres) * res) + origem_x
+        min_y = (np.min(y_livres) * res) + origem_y
+        max_y = (np.max(y_livres) * res) + origem_y
+
+        passo_lateral = getattr(self, 'largura_faixa_zigzag', 3.0)
+        max_faixas = getattr(self, 'max_faixas_zigzag', 30)
+        tolerancia_px = max(1, int(0.35 / res))
+        tol_chegada_lado = max(0.35, min(0.65, passo_lateral * 0.4))
+
+        # 2. INICIALIZAÇÃO NO CANTO MAIS PRÓXIMO
+        if not hasattr(self, 'zigzag_estado'):
+            cantos = [
+                (min_x, min_y,  1,  1),  # Inferior esquerdo -> varre +X, sobe +Y
+                (max_x, min_y, -1,  1),  # Inferior direito  -> varre -X, sobe +Y
+                (min_x, max_y,  1, -1),  # Superior esquerdo -> varre +X, desce -Y
+                (max_x, max_y, -1, -1),  # Superior direito  -> varre -X, desce -Y
+            ]
+            canto_inicial = min(cantos, key=lambda c: math.hypot(c[0] - rx, c[1] - ry))
+            _, _, self.zigzag_dir_x, self.zigzag_dir_y = canto_inicial
+            self.zigzag_y_atual = canto_inicial[1]
+            self.zigzag_x_parede = canto_inicial[0]
+            self.zigzag_faixas_concluidas = 0
+            self.zigzag_estado = "INDO_CANTO"
+            self.get_logger().info(
+                f"Iniciando Zig-Zag pelo canto ({canto_inicial[0]:.2f}, {canto_inicial[1]:.2f})"
+            )
+
+        # CRITÉRIO DE PARADA 1: Cobertura visual já completada (após iniciar a varredura)
+        if getattr(self, 'parar_por_cobertura_visual', True) and self.zigzag_faixas_concluidas >= 1:
+            nao_visto = np.uint8(self.memoria_camera == 0) * 255
+            pixels_restantes = cv2.countNonZero(cv2.bitwise_and(livre_seguro, nao_visto))
+            limite_ruido_px = max(10, int(0.25 / (res * res)))  # Ignora sobras < 0.25 m²
+            if pixels_restantes < limite_ruido_px:
+                duracao = time.time() - self.tempo_inicio
+                self.get_logger().info(
+                    f"ZIG-ZAG CONCLUÍDO (100% da área segura já vista pela câmera)! (Tempo: {duracao:.4f}s)"
+                )
+                self.zigzag_concluido = True
+                return None
+
+        alvo_x, alvo_y = None, None
+
+        # 3. ETAPA 1: IR ATÉ O CANTO INICIAL
+        if self.zigzag_estado == "INDO_CANTO":
+            target_cx = min_x if self.zigzag_dir_x == 1 else max_x
+            target_cy = min_y if self.zigzag_dir_y == 1 else max_y
+
+            idx_canto = np.argmin(
+                ((x_livres * res + origem_x) - target_cx) ** 2 +
+                ((y_livres * res + origem_y) - target_cy) ** 2
+            )
+            canto_seguro_x = (x_livres[idx_canto] * res) + origem_x
+            canto_seguro_y = (y_livres[idx_canto] * res) + origem_y
+
+            if math.hypot(canto_seguro_x - rx, canto_seguro_y - ry) < 0.7:
+                self.get_logger().info("Canto alcançado! Iniciando primeira faixa...")
+                self.zigzag_y_atual = canto_seguro_y
+                self.zigzag_estado = "VARRENDO_FAIXA"
+            else:
+                alvo_x, alvo_y = canto_seguro_x, canto_seguro_y
+
+        # 4. ETAPA 2: ALTERNÂNCIA ENTRE VARREDURA HORIZONTAL (---) E PASSO LATERAL (|)
+        if self.zigzag_estado in ("VARRENDO_FAIXA", "MUDANDO_FAIXA"):
+            iteracoes = 0
+            while iteracoes < 50:
+                iteracoes += 1
+
+                # CRITÉRIO DE PARADA 2: Limite máximo de faixas atingido
+                if self.zigzag_faixas_concluidas >= max_faixas:
+                    duracao = time.time() - self.tempo_inicio
+                    self.get_logger().info(
+                        f"ZIG-ZAG CONCLUÍDO (Limite de {max_faixas} faixas atingido)! (Tempo: {duracao:.4f}s)"
+                    )
+                    self.zigzag_concluido = True
+                    return None
+
+                # CRITÉRIO DE PARADA 3: Ultrapassou a parede final da quadra no eixo Y
+                passou_fim_y = (
+                    (self.zigzag_dir_y == 1 and self.zigzag_y_atual > max_y + 0.15) or
+                    (self.zigzag_dir_y == -1 and self.zigzag_y_atual < min_y - 0.15)
+                )
+                if passou_fim_y:
+                    duracao = time.time() - self.tempo_inicio
+                    self.get_logger().info(
+                        f"ZIG-ZAG 100% CONCLUÍDO ({self.zigzag_faixas_concluidas} faixas)! (Tempo: {duracao:.4f}s)"
+                    )
+                    self.zigzag_concluido = True
+                    return None
+
+                y_linha = max(min_y, min(max_y, self.zigzag_y_atual))
+                py_alvo = int((y_linha - origem_y) / res)
+
+                mascara_faixa = np.abs(y_livres - py_alvo) <= tolerancia_px
+                x_faixa = x_livres[mascara_faixa]
+                y_faixa = y_livres[mascara_faixa]
+
+                # Linha atual bloqueada/banida -> pula para a próxima faixa
+                if len(x_faixa) == 0:
+                    self.zigzag_y_atual += self.zigzag_dir_y * passo_lateral
+                    self.zigzag_faixas_concluidas += 1
+                    if self.zigzag_estado == "VARRENDO_FAIXA":
+                        self.zigzag_dir_x *= -1
+                    continue
+
+                # --- SUB-ESTADO A: MOVIMENTO RETO DE UMA PAREDE A OUTRA (-------------------) ---
+                if self.zigzag_estado == "VARRENDO_FAIXA":
+                    idx_extremo = np.argmax(x_faixa) if self.zigzag_dir_x == 1 else np.argmin(x_faixa)
+                    fim_x = (x_faixa[idx_extremo] * res) + origem_x
+                    fpx = int((fim_x - origem_x) / res)
+
+                    if 0 <= fpx < w and 0 <= py_alvo < h and livre_seguro[py_alvo, fpx] == 255:
+                        fim_y = y_linha
+                    else:
+                        fim_y = (y_faixa[idx_extremo] * res) + origem_y
+
+                    # Chegou na parede oposta
+                    if math.hypot(fim_x - rx, fim_y - ry) < 0.7:
+                        self.zigzag_faixas_concluidas += 1
+                        self.zigzag_x_parede = fim_x
+                        proxima_y = self.zigzag_y_atual + (self.zigzag_dir_y * passo_lateral)
+                        limite_y = max_y if self.zigzag_dir_y == 1 else min_y
+
+                        ultrapassou = (
+                            (self.zigzag_dir_y == 1 and proxima_y > max_y + 0.15) or
+                            (self.zigzag_dir_y == -1 and proxima_y < min_y - 0.15)
+                        )
+                        if ultrapassou:
+                            # Faz uma última faixa rente à parede final se restar mais de 0.8m
+                            if abs(limite_y - self.zigzag_y_atual) > 0.8:
+                                self.zigzag_y_atual = limite_y
+                            else:
+                                duracao = time.time() - self.tempo_inicio
+                                self.get_logger().info(
+                                    f"ZIG-ZAG 100% CONCLUÍDO ({self.zigzag_faixas_concluidas} faixas)! (Tempo: {duracao:.4f}s)"
+                                )
+                                self.zigzag_concluido = True
+                                return None
+                        else:
+                            self.zigzag_y_atual = proxima_y
+
+                        self.zigzag_estado = "MUDANDO_FAIXA"
+                        self.get_logger().info(
+                            f"Parede alcançada! Avançando lateralmente (|) para Y={self.zigzag_y_atual:.2f}m"
+                        )
+                        continue
+                    else:
+                        alvo_x, alvo_y = fim_x, fim_y
+                        break
+
+                # --- SUB-ESTADO B: PASSO PERPENDICULAR JUNTO À PAREDE (|) ---
+                elif self.zigzag_estado == "MUDANDO_FAIXA":
+                    x_candidatos = (x_faixa * res) + origem_x
+                    idx_lado = np.argmin(np.abs(x_candidatos - self.zigzag_x_parede))
+                    lado_x = x_candidatos[idx_lado]
+                    lpx = int((lado_x - origem_x) / res)
+
+                    if 0 <= lpx < w and 0 <= py_alvo < h and livre_seguro[py_alvo, lpx] == 255:
+                        lado_y = y_linha
+                    else:
+                        lado_y = (y_faixa[idx_lado] * res) + origem_y
+
+                    if math.hypot(lado_x - rx, lado_y - ry) < tol_chegada_lado:
+                        self.zigzag_dir_x *= -1
+                        self.zigzag_estado = "VARRENDO_FAIXA"
+                        self.get_logger().info(
+                            f"Passo lateral concluído! Varrendo faixa Y={lado_y:.2f}m (sentido X={self.zigzag_dir_x})"
+                        )
+                        continue
+                    else:
+                        alvo_x, alvo_y = lado_x, lado_y
+                        break
+
+            if alvo_x is None:
+                self.zigzag_concluido = True
+                return None
+
+        # 5. PROJEÇÃO DE WAYPOINT INTERMEDIÁRIO SEGURO
+        self.ultimo_alvo_x = alvo_x
+        self.ultimo_alvo_y = alvo_y
+
+        dist = math.hypot(alvo_x - rx, alvo_y - ry)
+        ang_alvo = math.atan2(alvo_y - ry, alvo_x - rx)
+
+        if dist > self.limite_distancia_nav:
+            ponto_seguro_encontrado = False
+            dist_teste = self.limite_distancia_nav
+            passo = res
+
+            while dist_teste > 0.4:
+                tx = rx + dist_teste * math.cos(ang_alvo)
+                ty = ry + dist_teste * math.sin(ang_alvo)
+                tpx = int((tx - origem_x) / res)
+                tpy = int((ty - origem_y) / res)
+
+                if 0 <= tpx < w and 0 <= tpy < h and livre_seguro[tpy, tpx] == 255:
+                    alvo_x, alvo_y = tx, ty
+                    ponto_seguro_encontrado = True
+                    break
+                dist_teste -= passo
+
+            if not ponto_seguro_encontrado:
+                alvo_x, alvo_y = self.ultimo_alvo_x, self.ultimo_alvo_y
+
+        self.get_logger().info(f"Zig-Zag [{self.zigzag_estado}] -> X={alvo_x:.2f}, Y={alvo_y:.2f}")
+        return self.criar_pose(alvo_x, alvo_y, ang_alvo)
 
     def calcular_aleatorio(self):
         if self.mapa_atual is None or self.memoria_camera is None:
@@ -432,6 +762,8 @@ class SearchNavigatorNode(Node):
             self.get_logger().warn("Aguardando tópico de mapa e de cobertura visual...", throttle_duration_sec=3.0)
             return
 
+        self.registrar_trajetoria()
+
         # 1. TRATA PEDIDO DE RESET/LIMPEZA (Parar Busca)
         if self.reiniciar_solicitado:
             self.get_logger().info("Limpando memória de navegação...")
@@ -461,6 +793,8 @@ class SearchNavigatorNode(Node):
             self.navigator.cancelTask()
             self.em_missao = False
             self.mudou_algoritmo = False
+            if hasattr(self, 'zigzag_estado'):
+                del self.zigzag_estado
             return
 
         # 4. GERENCIA A MISSÃO EM ANDAMENTO
@@ -497,8 +831,8 @@ class SearchNavigatorNode(Node):
             alvo = None
             if self.algoritmo_atual == "busca_fronteira":
                 alvo = self.calcular_fronteira()
-            elif self.algoritmo_atual == "busca_espiral":
-                alvo = self.calcular_espiral()
+            elif self.algoritmo_atual == "busca_zigzag":
+                alvo = self.calcular_zigzag()
             else:
                 alvo = self.calcular_aleatorio()
 
@@ -506,6 +840,10 @@ class SearchNavigatorNode(Node):
                 self.navigator.goToPose(alvo)
                 self.tempo_inicio_missao = self.get_clock().now()
                 self.em_missao = True
+            else:
+                self.get_logger().info(f"Aguardando novos comandos MQTT...")
+                self.pausado = True
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -531,6 +869,8 @@ def main(args=None):
     except KeyboardInterrupt:
         node_search.get_logger().info("Encerrando nó de navegação...")
     finally:
+        if hasattr(node_search, 'arquivo_csv') and not node_search.arquivo_csv.closed:
+            node_search.arquivo_csv.close()
         navigator.cancelTask()
         executor.shutdown()
         node_search.destroy_node()
