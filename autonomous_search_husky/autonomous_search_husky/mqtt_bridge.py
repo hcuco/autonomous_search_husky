@@ -58,7 +58,7 @@ class MqttBridgeNode(Node):
         )
         self.mapa_subscriber = self.create_subscription(
             OccupancyGrid,
-            '/a200_1077/map',
+            '/a200_1077/mapa_cobertura_visual',
             self.mapa_callback,
             qos_mapa
         )
@@ -135,7 +135,7 @@ class MqttBridgeNode(Node):
     # FLUXO 4: TELEMETRIA DO ROBÔ (TF2 -> MQTT)
     # ==========================================
     def get_robot_pose(self):
-        nome_mapa = self.mapa_atual.header.frame_id if self.mapa_atual else 'a200_1077/map'
+        nome_mapa = self.mapa_atual.header.frame_id if self.mapa_atual else 'a200_1077/mapa_cobertura_visual'
         try:
             t = self.tf_buffer.lookup_transform(nome_mapa, 'a200_1077/base_link', rclpy.time.Time())
         except TransformException:

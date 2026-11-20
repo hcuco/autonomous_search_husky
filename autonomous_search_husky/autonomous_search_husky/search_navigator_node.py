@@ -289,7 +289,7 @@ class SearchNavigatorNode(Node):
             self.get_logger().info(f"Viajando para área: X={alvo_x:.2f}, Y={alvo_y:.2f}")
             return self.criar_pose(alvo_x, alvo_y, ang_alvo)
 
-    def calcular_espiral(self):
+    def calcular_zigzag(self):
         return self.criar_pose(1.5, -1.5)
 
     def calcular_aleatorio(self):
@@ -378,6 +378,7 @@ class SearchNavigatorNode(Node):
             if not fronteiras_validas:
                 duracao = time.time() - self.tempo_inicio
                 self.get_logger().info(f"COBERTURA VISUAL 100% CONCLUÍDA! (Tempo: {duracao:.4f}s)")
+                self.pausado = True
                 return None
 
             # Sorteia uma nova e salva como a nova Meta Global
