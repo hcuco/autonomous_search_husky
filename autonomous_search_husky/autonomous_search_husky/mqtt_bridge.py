@@ -84,6 +84,10 @@ class MqttBridgeNode(Node):
         
         self.mqtt_client.will_set("husky/status", '{"online": false}', qos=1, retain=True)
         
+        # [MODIFICAÇÃO] Reconexão rápida. Por padrão, o paho espaça as tentativas de reconexão até 120 s,
+        # o que atrasaria o envio da lista quando o robô voltasse para a área de cobertura.
+        self.mqtt_client.reconnect_delay_set(min_delay=1, max_delay=5)
+        
         self.mqtt_client.connect_async(self.broker_ip, self.broker_port, keepalive=10)
         self.mqtt_client.loop_start()
 
