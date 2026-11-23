@@ -39,14 +39,15 @@ class MapCoverageNode(Node):
         self.mapa_atual = None
         self.memoria_camera = None
 
-        self.create_subscription(OccupancyGrid, '/a200_1077/map', self.mapa_callback, 10)
-        self.create_subscription(String, '/husky/comando_recebido', self.receber_comando, 10)
-
         qos_mapa = QoSProfile(
             depth=1,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
             reliability=ReliabilityPolicy.RELIABLE
         )
+
+        self.create_subscription(OccupancyGrid, '/a200_1077/map', self.mapa_callback, qos_mapa)
+        self.create_subscription(String, '/husky/comando_recebido', self.receber_comando, 10)
+
         self.cobertura_pub = self.create_publisher(OccupancyGrid, '/a200_1077/mapa_cobertura_visual', qos_mapa)
         
         self.create_timer(0.2, self.atualizar_memoria_camera)

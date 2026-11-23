@@ -129,9 +129,9 @@ class GerenciadorVitimasNode(Node):
                 melhor_vp = vp
 
         if melhor_vp is not None:
-            fator_distancia = max(0.05, 1.0 - (dist_rel / 6.0))
-            fator_angulo = max(0.05, 1.0 - (abs(angulo) / 45.0))
-            fator_confianca = max(0.05, min(3*(conf - 0.6), 1.0))
+            fator_distancia = max(0.1, 1.0 - (dist_rel / 8.0))
+            fator_angulo = max(0.15, 1.0 - (abs(angulo) / 30.0))
+            fator_confianca = max(0.25, min(3*(conf - 0.6), 1.0))
             incremento = fator_confianca * fator_distancia * fator_angulo
 
             melhor_vp['confianca_acumulada'] += incremento

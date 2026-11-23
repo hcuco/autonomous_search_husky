@@ -22,7 +22,7 @@ from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 
-# ros2 run autonomous_search_husky search_navigator --ros-args -p use_sim_time:=true -p timeout_missao_segundos:=20.0 -p raio_seguranca:=2.0 -r /tf:=/a200_1077/tf -r /tf_static:=/a200_1077/tf_static
+# ros2 run autonomous_search_husky search_navigator --ros-args -p use_sim_time:=true -p csv_path:="~/historico_trajetorias.csv" -p timeout_missao_segundos:=20.0 -p raio_seguranca:=2.0 -r /tf:=/a200_1077/tf -r /tf_static:=/a200_1077/tf_static
 
 
 class SearchNavigatorNode(Node):
@@ -35,6 +35,7 @@ class SearchNavigatorNode(Node):
         self.declare_parameter("largura_faixa_zigzag", 5.0)
         self.declare_parameter("max_faixas_zigzag", 30)
         self.declare_parameter("parar_por_cobertura_visual", True)
+        self.declare_parameter("csv_path", '~/pe_husky/historico_trajetorias.csv')
         
         self.navigator = navigator
         self.tf_buffer = Buffer()
@@ -51,7 +52,8 @@ class SearchNavigatorNode(Node):
         self.mudou_algoritmo = False
         self.voltar_base = False
         self.base_segura_pose = None
-        
+
+        self.csv_path = self.get_parameter('csv_path').value
         self.timeout_missao_segundos = self.get_parameter("timeout_missao_segundos").value
         self.limite_distancia_nav = self.get_parameter("limite_distancia_nav").value
         self.raio_seguranca = self.get_parameter("raio_seguranca").value
@@ -99,7 +101,8 @@ class SearchNavigatorNode(Node):
         self.distancia_total_percorrida = 0.0
 
         # Arquivo CSV para análise/gráficos posteriores
-        caminho_csv = os.path.expanduser('~/pe_husky/historico_trajetorias.csv')
+
+        caminho_csv = os.path.expanduser(self.csv_path)
         self.arquivo_csv = open(caminho_csv, mode='w', newline='')
         self.csv_writer = csv.writer(self.arquivo_csv)
         self.csv_writer.writerow(['tempo_s', 'algoritmo', 'x', 'y', 'yaw', 'distancia_acumulada_m'])
@@ -850,7 +853,11 @@ def main(args=None):
     
     navigator = BasicNavigator(namespace='a200_1077')
     navigator.get_logger().info("Aguardando ativação do Nav2 e SLAM...")
-    navigator.waitUntilNav2Active(localizer='slam_toolbox')
+    # Por (ou use um parâmetro para alternar entre 'amcl' e 'slam_toolbox'):
+    navigator.declare_parameter('localizer', 'amcl')
+    localizer_name = navigator.get_parameter('localizer').value
+    navigator.waitUntilNav2Active(localizer=localizer_name)
+
 
     node_search = SearchNavigatorNode(navigator)
     
