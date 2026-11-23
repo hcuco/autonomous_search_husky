@@ -3,7 +3,7 @@ import math
 from ultralytics import YOLO
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image, CameraInfo
+from sensor_msgs.msg import Image, CameraInfo, CompressedImage
 from message_filters import Subscriber, ApproximateTimeSynchronizer
 import numpy as np
 import traceback
@@ -17,10 +17,10 @@ from rclpy.qos import (
 )
 
 from cv_bridge import CvBridge
+import cv2
 
 # Imports para a matemática 3D e Transformações (TF)
 from tf2_ros import Buffer, TransformListener
-import tf2_ros
 
 # exemplo de comando para rodar este nó com parâmetros específicos:
 # ros2 run autonomous_search_husky teste_yolo --ros-args -p use_sim_time:=true -p yolo_model:=yolov8n.pt -p global_frame:=map -p robot_namespace:=/a200_1077
@@ -36,10 +36,19 @@ class PrimeiroTesteNode(Node):
         self.declare_parameter("global_frame", "odom") 
         self.declare_parameter("base_frame", "base_link") 
 
+        # Parâmetros para streaming leve de debug via MQTT
+        self.declare_parameter('debug_image_rate', 2.0)     # Hz (quadros por segundo)
+        self.declare_parameter('debug_image_width', 320)    # Largura em pixels
+        self.declare_parameter('debug_jpeg_quality', 40)    # Qualidade JPEG (1 a 100)
+
         self.yolo_model_name = self.get_parameter("yolo_model").value
         ns = self.get_parameter("robot_namespace").value
         self.global_frame = self.get_parameter("global_frame").value
         self.base_frame = self.get_parameter("base_frame").value
+
+        self.debug_rate = float(self.get_parameter('debug_image_rate').value)
+        self.debug_width = int(self.get_parameter('debug_image_width').value)
+        self.debug_quality = int(self.get_parameter('debug_jpeg_quality').value)
 
         if ns and not ns.startswith('/'): ns = '/' + ns
         if ns.endswith('/'): ns = ns[:-1]
@@ -94,6 +103,11 @@ class PrimeiroTesteNode(Node):
         # Publica as Deteccoes (JSON String) para o Gerenciador de Vítimas
         self.victim_pub = self.create_publisher(VictimDetection, f"{ns}/victim_detections", 10)
 
+        debug_topic = f'{ns}/yolo/annotated/compressed' if ns else '/yolo/annotated/compressed'
+
+        self.debug_pub = self.create_publisher(CompressedImage, debug_topic, 1)
+        self.last_debug_pub_ns = 0
+
     def quat_to_mat(self, q):
         x, y, z, w = q.x, q.y, q.z, q.w
         return np.array([
@@ -117,6 +131,36 @@ class PrimeiroTesteNode(Node):
                 source=rgb_image, show=False, conf=0.55, classes=[self.person_id], verbose=False
             )
             result = results[0]
+
+            now_ns = self.get_clock().now().nanoseconds
+            min_interval_ns = int(1e9 / self.debug_rate) if self.debug_rate > 0 else 0
+
+            if min_interval_ns > 0 and (now_ns - self.last_debug_pub_ns) >= min_interval_ns:
+                self.last_debug_pub_ns = now_ns
+
+                # Desenha bounding boxes, classes, confiança e keypoints (se for pose)
+                annotated = results[0].plot()
+
+                # Reduz a resolução mantendo a proporção
+                h, w = annotated.shape[:2]
+                if w > self.debug_width:
+                    scale = self.debug_width / float(w)
+                    new_h = int(h * scale)
+                    annotated = cv2.resize(annotated, (self.debug_width, new_h), interpolation=cv2.INTER_AREA)
+
+                # Comprime para JPEG com qualidade reduzida
+                ok, buffer = cv2.imencode(
+                    '.jpg',
+                    annotated,
+                    [int(cv2.IMWRITE_JPEG_QUALITY), self.debug_quality]
+                )
+
+                if ok:
+                    comp_msg = CompressedImage()
+                    comp_msg.header = rgb_msg.header  # Use o nome da variável da mensagem Image recebida no callback
+                    comp_msg.format = 'jpeg'
+                    comp_msg.data = buffer.tobytes()
+                    self.debug_pub.publish(comp_msg)
 
             for box in result.boxes:
                 x1, y1, x2, y2 = box.xyxy[0].cpu().tolist()

@@ -8,6 +8,7 @@ from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
+from sensor_msgs.msg import CompressedImage
 
 import paho.mqtt.client as mqtt
 import numpy as np
@@ -37,6 +38,7 @@ class MqttBridgeNode(Node):
         self.mqtt_topic_vitimas = "husky/vitimas"
         self.mqtt_topic_telemetria = "husky/telemetria"
         self.mqtt_topic_mapa = "husky/mapa"
+        self.mqtt_topic_yolo = "husky/yolo"
         self.mqtt_topic_sub = "central/comandos"  
         
         # 2. Configuração de TF2 (para leitura da pose do robô)
@@ -61,6 +63,13 @@ class MqttBridgeNode(Node):
             '/a200_1077/mapa_cobertura_visual',
             self.mapa_callback,
             qos_mapa
+        )
+
+        self.create_subscription(
+            CompressedImage,
+            '/a200_1077/yolo/annotated/compressed',
+            self.yolo_img_callback,
+            1
         )
         
         self.ros_publisher = self.create_publisher(
@@ -207,6 +216,9 @@ class MqttBridgeNode(Node):
         
         self.mqtt_client.publish(self.mqtt_topic_mapa, json.dumps(payload), qos=0)
 
+    def yolo_img_callback(self, msg: CompressedImage):
+        # Opção 1: Envio binário puro (menor overhead de rede - ~12 KB)
+        self.mqtt_client.publish(self.mqtt_topic_yolo, bytes(msg.data), qos=0)
 
 def main(args=None):
     rclpy.init(args=args)

@@ -6,6 +6,7 @@ from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 from nav_msgs.msg import OccupancyGrid
 from geometry_msgs.msg import PoseStamped, TransformStamped
 from visualization_msgs.msg import Marker, MarkerArray
+from sensor_msgs.msg import Image
 from tf2_ros import TransformBroadcaster
 
 import paho.mqtt.client as mqtt
@@ -19,7 +20,6 @@ class MqttBridgeCentralNode(Node):
     def __init__(self):
         super().__init__('mqtt_bridge_central_node')
         
-        # O IP deve ser o do broker MQTT (provavelmente a própria central)
         self.declare_parameter('broker_ip', '127.0.0.1')
         self.broker_ip = self.get_parameter('broker_ip').value
         self.broker_port = 1883
@@ -34,6 +34,7 @@ class MqttBridgeCentralNode(Node):
         self.map_pub = self.create_publisher(OccupancyGrid, '/central/map', qos_latch)
         self.pose_pub = self.create_publisher(PoseStamped, '/central/robot_pose', 10)
         self.victims_pub = self.create_publisher(MarkerArray, '/central/vitimas_rviz', 10)
+        self.yolo_pub = self.create_publisher(Image, '/central/yolo/image', 1)
         self.tf_broadcaster = TransformBroadcaster(self)
         
         # Inicialização do MQTT
@@ -42,34 +43,32 @@ class MqttBridgeCentralNode(Node):
         self.mqtt_client.on_connect = self.on_connect
         self.mqtt_client.on_message = self.on_message
         
-        # [MODIFICAÇÃO] Reconexão rápida caso o broker (Mosquitto) seja reiniciado.
-        # Por padrão, o paho espaça as tentativas de reconexão até 120 s.
         self.mqtt_client.reconnect_delay_set(min_delay=1, max_delay=5)
-        
         self.mqtt_client.connect_async(self.broker_ip, self.broker_port, 10)
         self.mqtt_client.loop_start()
 
     def on_connect(self, client, userdata, flags, rc):
         if rc == 0:
             self.get_logger().info("✅ Central conectada ao MQTT! Escutando robô...")
-            # Assina os tópicos que o robô está enviando
             self.mqtt_client.subscribe("husky/telemetria", qos=0)
             self.mqtt_client.subscribe("husky/mapa", qos=0)
             self.mqtt_client.subscribe("husky/vitimas", qos=1)
+            self.mqtt_client.subscribe("husky/yolo", qos=0)
         else:
             self.get_logger().error(f"❌ Falha de conexão. Erro: {rc}")
 
     def on_message(self, client, userdata, msg):
         topic = msg.topic
-        payload = msg.payload.decode('utf-8')
         
         try:
             if topic == "husky/telemetria":
-                self.processar_telemetria(payload)
+                self.processar_telemetria(msg.payload.decode('utf-8'))
             elif topic == "husky/mapa":
-                self.processar_mapa(payload)
+                self.processar_mapa(msg.payload.decode('utf-8'))
             elif topic == "husky/vitimas":
-                self.processar_vitimas(payload)
+                self.processar_vitimas(msg.payload.decode('utf-8'))
+            elif topic == "husky/yolo":
+                self.processar_yolo(msg.payload)
         except Exception as e:
             self.get_logger().error(f"Erro ao processar {topic}: {e}")
 
@@ -78,7 +77,6 @@ class MqttBridgeCentralNode(Node):
         x, y, yaw = dados['x'], dados['y'], dados['yaw']
         agora = self.get_clock().now().to_msg()
         
-        # 1. Publica a TF (Transformada Oficial)
         t = TransformStamped()
         t.header.stamp = agora
         t.header.frame_id = 'map'
@@ -90,7 +88,6 @@ class MqttBridgeCentralNode(Node):
         t.transform.rotation.w = float(math.cos(yaw / 2.0))
         self.tf_broadcaster.sendTransform(t)
         
-        # 2. Publica um PoseStamped (Para desenhar uma Seta no RViz facilmente)
         pose = PoseStamped()
         pose.header.stamp = agora
         pose.header.frame_id = 'map'
@@ -103,17 +100,16 @@ class MqttBridgeCentralNode(Node):
         dados = json.loads(payload)
         img_b64 = dados['mapa_png']
         
-        # Descompacta Base64 -> Bytes -> OpenCV (Grayscale)
         img_bytes = base64.b64decode(img_b64)
         np_arr = np.frombuffer(img_bytes, np.uint8)
         img = cv2.imdecode(np_arr, cv2.IMREAD_GRAYSCALE)
         
-        if img is None: return
+        if img is None:
+            return
         
-        # Reconverte a imagem para o array original do ROS (-1, 0, 100)
         grid = np.full(img.shape, -1, dtype=np.int8)
-        grid[img == 255] = 0    # Branco -> Espaço livre (0)
-        grid[img == 0] = 100    # Preto -> Obstáculo (100)
+        grid[img == 255] = 0
+        grid[img == 0] = 100
         
         msg = OccupancyGrid()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -133,35 +129,71 @@ class MqttBridgeCentralNode(Node):
         
         marker_array = MarkerArray()
         
-        # [MODIFICAÇÃO] Como o robô envia a lista COMPLETA de vítimas periodicamente, todos os marcadores
-        # são apagados antes de redesenhar. Antes, eles só eram apagados com a lista vazia, e uma vítima
-        # que saísse da lista (ex.: duplicadas unificadas ou id alterado) continuava aparecendo no RViz.
         apagar = Marker()
         apagar.header.frame_id = 'map'
         apagar.ns = 'vitimas_confirmadas'
         apagar.action = Marker.DELETEALL
         marker_array.markers.append(apagar)
         
-        # Cria uma esfera vermelha para cada vítima
         for v in vitimas:
             m = Marker()
             m.header.frame_id = 'map'
             m.ns = 'vitimas_confirmadas'
-            m.id = int(v['id'])  # [MODIFICAÇÃO] garante id inteiro, exigido pelo Marker
+            m.id = int(v['id'])
             m.type = Marker.SPHERE
             m.action = Marker.ADD
             m.pose.position.x = float(v['x'])
             m.pose.position.y = float(v['y'])
-            m.pose.position.z = 0.3  # Fica um pouco acima do chão
+            m.pose.position.z = 0.3
             m.pose.orientation.w = 1.0
             m.scale.x = 0.6
             m.scale.y = 0.6
             m.scale.z = 0.6
             m.color.r = 1.0
-            m.color.a = 1.0 # 100% visível (não transparente)
+            m.color.a = 1.0
             marker_array.markers.append(m)
                 
         self.victims_pub.publish(marker_array)
+
+    def processar_yolo(self, raw_payload: bytes):
+        # Extrai os bytes JPEG (suporta binário puro, Base64 ou JSON)
+        if raw_payload.startswith(b'\xff\xd8'):
+            jpeg_bytes = raw_payload
+        else:
+            texto = raw_payload.decode('utf-8').strip()
+            if texto.startswith('{'):
+                dados = json.loads(texto)
+                b64_str = (
+                    dados.get('imagem')
+                    or dados.get('frame')
+                    or dados.get('yolo_jpg')
+                    or dados.get('data', '')
+                )
+                jpeg_bytes = base64.b64decode(b64_str)
+            else:
+                jpeg_bytes = base64.b64decode(texto)
+
+        if not jpeg_bytes:
+            return
+
+        # Decodifica o JPEG para matriz BGR do OpenCV
+        np_arr = np.frombuffer(jpeg_bytes, np.uint8)
+        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        if frame is None:
+            return
+
+        # Publica como sensor_msgs/msg/Image padrão (sem precisar de CameraInfo)
+        img_msg = Image()
+        img_msg.header.stamp = self.get_clock().now().to_msg()
+        img_msg.header.frame_id = 'base_link'
+        img_msg.height = frame.shape[0]
+        img_msg.width = frame.shape[1]
+        img_msg.encoding = 'bgr8'
+        img_msg.is_bigendian = False
+        img_msg.step = frame.shape[1] * 3
+        img_msg.data = frame.tobytes()
+        self.yolo_pub.publish(img_msg)
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -174,7 +206,9 @@ def main(args=None):
         node.mqtt_client.loop_stop()
         node.mqtt_client.disconnect()
         node.destroy_node()
-        if rclpy.ok(): rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()
