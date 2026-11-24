@@ -195,11 +195,15 @@ class SearchNavigatorNode(Node):
             if acao == "iniciar_busca":
                 self.algoritmo_atual = comando.get("algoritmo", "busca_fronteira")
                 self.mudou_algoritmo = True
+                self.exploracao_concluida = False
+                self.zigzag_concluido = False
                 self.pausado = False
+                self.reiniciar_solicitado = True
                 self.get_logger().info(f"INICIANDO BUSCA ({self.algoritmo_atual})")
                 
             elif acao == "parar_busca":
-                self.reiniciar_solicitado = True
+                self.exploracao_concluida = False
+                self.zigzag_concluido = False
                 self.pausado = True
                 self.get_logger().info("PARANDO BUSCA E LIMPANDO MEMÓRIA")
                 
@@ -308,6 +312,7 @@ class SearchNavigatorNode(Node):
         if not fronteiras_validas:
             duracao = time.time() - self.tempo_inicio
             self.get_logger().info(f"COBERTURA VISUAL 100% CONCLUÍDA! (Tempo: {duracao:.4f}s)")
+            self.exploracao_concluida = True
             return None
                 
         fronteiras_validas.sort(key=lambda x: x[3]) 
@@ -711,7 +716,7 @@ class SearchNavigatorNode(Node):
             if not fronteiras_validas:
                 duracao = time.time() - self.tempo_inicio
                 self.get_logger().info(f"COBERTURA VISUAL 100% CONCLUÍDA! (Tempo: {duracao:.4f}s)")
-                self.pausado = True
+                self.exploracao_concluida = True
                 return None
 
             # Sorteia uma nova e salva como a nova Meta Global
@@ -830,7 +835,15 @@ class SearchNavigatorNode(Node):
             return
 
         # 5. INICIA NOVA MISSÃO DE EXPLORAÇÃO
-        if not self.em_missao and self.conectado_rede:
+        if not self.em_missao:
+            rx, ry, _ = self.get_robot_pose()
+            if rx is None:
+                self.get_logger().warn(
+                    "TF do robô indisponível no momento. Tentando novamente no próximo ciclo...",
+                    throttle_duration_sec=2.0
+                )
+                return
+
             alvo = None
             if self.algoritmo_atual == "busca_fronteira":
                 alvo = self.calcular_fronteira()
@@ -839,13 +852,24 @@ class SearchNavigatorNode(Node):
             else:
                 alvo = self.calcular_aleatorio()
 
-            if alvo:
-                self.navigator.goToPose(alvo)
+            if alvo is not None:
+                aceito = self.navigator.goToPose(alvo)
+                if aceito is False:
+                    self.get_logger().warn(
+                        "Nav2 rejeitou ou ainda não recebeu o objetivo. Tentando novamente...",
+                        throttle_duration_sec=2.0
+                    )
+                    return
                 self.tempo_inicio_missao = self.get_clock().now()
                 self.em_missao = True
-            else:
-                self.get_logger().info(f"Aguardando novos comandos MQTT...")
+            elif self.exploracao_concluida or self.zigzag_concluido:
+                self.get_logger().info("Missão concluída! Aguardando novos comandos MQTT...")
                 self.pausado = True
+            else:
+                self.get_logger().warn(
+                    "Nenhum alvo gerado neste ciclo (aguardando sincronização). Tentando novamente...",
+                    throttle_duration_sec=2.0
+                )
 
 
 def main(args=None):

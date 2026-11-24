@@ -61,7 +61,7 @@ class GerenciadorVitimasNode(Node):
         try:
             comando = json.loads(msg.data)
             acao = comando.get("acao")
-            if acao == "parar_busca":
+            if acao == "iniciar_busca":
                 self.vitimas_potenciais.clear()
                 self.vitimas_confirmadas.clear()
                 self.contador_ids = 0

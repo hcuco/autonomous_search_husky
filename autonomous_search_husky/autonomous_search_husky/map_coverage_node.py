@@ -57,7 +57,7 @@ class MapCoverageNode(Node):
         try:
             comando = json.loads(msg.data)
             acao = comando.get("acao")
-            if acao == "parar_busca":
+            if acao == "iniciar_busca":
                 if self.memoria_camera is not None:
                     self.memoria_camera.fill(0)
                     if hasattr(self, 'contador_exposicao'):
