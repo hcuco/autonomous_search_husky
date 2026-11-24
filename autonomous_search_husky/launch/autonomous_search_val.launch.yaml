@@ -1,0 +1,204 @@
+launch:
+  # --- 1. Argumentos Gerais e de Infraestrutura ---
+  - arg:
+      name: "use_sim_time"
+      default: "false"
+      description: "Usa o relógio da simulação se true (false para o robô físico)"
+  - arg:
+      name: "robot_namespace"
+      default: "/a200_1077"
+      description: "Namespace do robô Husky"
+  - arg:
+      name: "global_frame"
+      default: "map"
+      description: "Frame global de referência (map ou odom)"
+  - arg:
+      name: "setup_path"
+      default: "/etc/clearpath"
+      description: "Caminho de configuração da plataforma Clearpath"
+  - arg:
+      name: "scan_topic"
+      default: "/a200_1077/sensors/lidar3d_0/scan"
+      description: "Tópico do LaserScan usado pelo Nav2"
+  - arg:
+      name: "broker_ip"
+      default: "192.168.0.241"
+      description: "Endereço IP do broker MQTT da central"
+  - arg:
+      name: "localizer"
+      default: "amcl"
+      description: "Nó de localização aguardado pelo BasicNavigator (amcl ou slam_toolbox)"
+
+  # --- 2. Argumentos - Visão e Gerenciamento de Vítimas ---
+  - arg:
+      name: "yolo_model"
+      default: "/home/robot/yolov8n.pt"
+      description: "Caminho do arquivo de pesos do modelo YOLO (.pt)"
+  - arg:
+      name: "limiar_confirmacao"
+      default: "5.0"
+      description: "Confiança acumulada necessária para confirmar vítima"
+  - arg:
+      name: "limiar_deslocamento_marker"
+      default: "0.2"
+      description: "Distância mínima (m) para atualizar a posição do marker no RViz"
+
+  # --- 3. Argumentos - Cobertura Visual (Map Coverage) ---
+  - arg:
+      name: "alcance_camera_m"
+      default: "8.0"
+      description: "Alcance máximo do cone de visão da câmera (m)"
+  - arg:
+      name: "fov_camera_deg"
+      default: "60.0"
+      description: "Campo de visão horizontal da câmera (graus)"
+  - arg:
+      name: "offset_camera_x"
+      default: "0.3"
+      description: "Deslocamento frontal da câmera em relação ao base_link (m)"
+  - arg:
+      name: "frames_necessarios"
+      default: "15"
+      description: "Quantidade de frames para confirmar uma célula como explorada"
+  - arg:
+      name: "area_buraco_max_m2"
+      default: "1.0"
+      description: "Área máxima (m²) de bolsões não vistos preenchidos automaticamente"
+
+  # --- 4. Argumentos - Navegação Autônoma ---
+  - arg:
+      name: "raio_seguranca"
+      default: "2.0"
+      description: "Raio de segurança em relação aos obstáculos (m)"
+  - arg:
+      name: "limite_distancia_nav"
+      default: "6.0"
+      description: "Distância máxima para envio de waypoints intermediários (m)"
+  - arg:
+      name: "timeout_missao_segundos"
+      default: "20.0"
+      description: "Tempo limite para alcançar um ponto de busca (s)"
+  - arg:
+      name: "csv_path"
+      default: "$(env HOME)/historico_trajetorias.csv"
+      description: "Caminho do arquivo CSV de registro de trajetórias"
+
+  # --- 5. Flags de Ativação Seletiva ---
+  - arg:
+      name: "ativar_nav2"
+      default: "true"
+      description: "Inicia a pilha do Nav2 junto com o launch"
+  - arg:
+      name: "ativar_navegacao"
+      default: "true"
+      description: "Inicia o nó search_navigator (false para testar com teleop)"
+  - arg:
+      name: "ativar_mqtt"
+      default: "true"
+      description: "Inicia o nó mqtt_bridge para comunicação externa"
+
+  # --- 6. Inclusão do Nav2 e Nós da Aplicação ---
+  - include:
+      file: "$(find-pkg-share clearpath_nav2_demos)/launch/nav2.launch.py"
+      if: "$(var ativar_nav2)"
+      arg:
+        - name: setup_path
+          value: "$(var setup_path)"
+        - name: scan_topic
+          value: "$(var scan_topic)"
+
+  - node:
+      pkg: autonomous_search_husky
+      exec: teste_yolo
+      name: teste_yolo
+      output: screen
+      param:
+        - name: use_sim_time
+          value: "$(var use_sim_time)"
+        - name: yolo_model
+          value: "$(var yolo_model)"
+        - name: global_frame
+          value: "$(var global_frame)"
+        - name: robot_namespace
+          value: "$(var robot_namespace)"
+
+  - node:
+      pkg: autonomous_search_husky
+      exec: victim_manager
+      name: victim_manager
+      output: screen
+      param:
+        - name: use_sim_time
+          value: "$(var use_sim_time)"
+        - name: global_frame
+          value: "$(var global_frame)"
+        - name: limiar_confirmacao
+          value: "$(var limiar_confirmacao)"
+        - name: limiar_deslocamento_marker
+          value: "$(var limiar_deslocamento_marker)"
+
+  - node:
+      pkg: autonomous_search_husky
+      exec: map_coverage
+      name: map_coverage
+      output: screen
+      param:
+        - name: use_sim_time
+          value: "$(var use_sim_time)"
+        - name: alcance_camera_m
+          value: "$(var alcance_camera_m)"
+        - name: fov_camera_deg
+          value: "$(var fov_camera_deg)"
+        - name: offset_camera_x
+          value: "$(var offset_camera_x)"
+        - name: frames_necessarios
+          value: "$(var frames_necessarios)"
+        - name: area_buraco_max_m2
+          value: "$(var area_buraco_max_m2)"
+      remap:
+        - from: /tf
+          to: "$(var robot_namespace)/tf"
+        - from: /tf_static
+          to: "$(var robot_namespace)/tf_static"
+
+  - node:
+      pkg: autonomous_search_husky
+      exec: mqtt_bridge
+      name: mqtt_bridge
+      output: screen
+      if: "$(var ativar_mqtt)"
+      param:
+        - name: use_sim_time
+          value: "$(var use_sim_time)"
+        - name: broker_ip
+          value: "$(var broker_ip)"
+      remap:
+        - from: /tf
+          to: "$(var robot_namespace)/tf"
+        - from: /tf_static
+          to: "$(var robot_namespace)/tf_static"
+
+  - node:
+      pkg: autonomous_search_husky
+      exec: search_navigator
+      name: search_navigator
+      output: screen
+      if: "$(var ativar_navegacao)"
+      param:
+        - name: use_sim_time
+          value: "$(var use_sim_time)"
+        - name: csv_path
+          value: "$(var csv_path)"
+        - name: localizer
+          value: "$(var localizer)"
+        - name: timeout_missao_segundos
+          value: "$(var timeout_missao_segundos)"
+        - name: limite_distancia_nav
+          value: "$(var limite_distancia_nav)"
+        - name: raio_seguranca
+          value: "$(var raio_seguranca)"
+      remap:
+        - from: /tf
+          to: "$(var robot_namespace)/tf"
+        - from: /tf_static
+          to: "$(var robot_namespace)/tf_static"
