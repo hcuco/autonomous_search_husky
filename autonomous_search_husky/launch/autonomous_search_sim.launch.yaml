@@ -159,6 +159,8 @@ launch:
           value: "$(var limite_distancia_nav)"
         - name: "raio_seguranca"
           value: "$(var raio_seguranca)"
+        - name: "localizer"
+          value: "slam_toolbox"
       remap:
         - from: "/tf"
           to: "$(var robot_namespace)/tf"

@@ -1,0 +1,181 @@
+<sdf version='1.10'>
+  <world name='warehouse'>
+    <physics type='ode'>
+      <max_step_size>0.0030000000000000001</max_step_size>
+      <real_time_factor>1</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
+      <gravity>0 0 -9.8</gravity>
+    </physics>
+    <plugin name='gz::sim::systems::Physics' filename='libgz-sim-physics-system.so'/>
+    <plugin name='gz::sim::systems::UserCommands' filename='libgz-sim-user-commands-system.so'/>
+    <plugin name='gz::sim::systems::SceneBroadcaster' filename='libgz-sim-scene-broadcaster-system.so'/>
+    <plugin name='gz::sim::systems::Sensors' filename='libgz-sim-sensors-system.so'>
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin name='gz::sim::systems::Imu' filename='libgz-sim-imu-system.so'/>
+    <plugin name='gz::sim::systems::NavSat' filename='libgz-sim-navsat-system.so'/>
+    <scene>
+      <ambient>1 1 1 1</ambient>
+      <background>0.300000012 0.699999988 0.899999976 1</background>
+      <shadows>false</shadows>
+      <grid>false</grid>
+    </scene>
+    <spherical_coordinates>
+      <surface_model>EARTH_WGS84</surface_model>
+      <world_frame_orientation>ENU</world_frame_orientation>
+      <latitude_deg>-22.986687</latitude_deg>
+      <longitude_deg>-43.202500999999998</longitude_deg>
+      <elevation>0</elevation>
+      <heading_deg>0</heading_deg>
+    </spherical_coordinates>
+    <gravity>0 0 -9.8000000000000007</gravity>
+    <magnetic_field>5.5644999999999998e-06 2.2875799999999999e-05 -4.2388400000000002e-05</magnetic_field>
+    <atmosphere type='adiabatic'/>
+    <model name='ground_plane'>
+      <static>true</static>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>1 1</size>
+            </plane>
+          </geometry>
+          <surface>
+            <friction>
+              <ode/>
+            </friction>
+            <bounce/>
+            <contact/>
+          </surface>
+        </collision>
+        <pose>0 0 0 0 0 0</pose>
+        <inertial>
+          <pose>0 0 0 0 0 0</pose>
+          <mass>1</mass>
+          <inertia>
+            <ixx>1</ixx>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyy>1</iyy>
+            <iyz>0</iyz>
+            <izz>1</izz>
+          </inertia>
+        </inertial>
+        <enable_wind>false</enable_wind>
+      </link>
+      <pose>0 0 0 0 0 0</pose>
+      <self_collide>false</self_collide>
+    </model>
+    <include>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Warehouse</uri>
+      <name>warehouse</name>
+      <pose>0 0 -0.10000000000000001 0 0 0</pose>
+    </include>
+    <include>
+      <uri>https://fuel.gazebosim.org/1.0/MovAi/models/shelf</uri>
+      <name>shelf_6</name>
+      <pose>13.5 -15 0 0 0 0</pose>
+    </include>
+    <include>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Jersey Barrier</uri>
+      <name>barrier_0</name>
+      <pose>-10.4 14.75 0 0 0 1.5699999999999998</pose>
+    </include>
+    <include>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Jersey Barrier</uri>
+      <name>barrier_1</name>
+      <pose>-10.4 10.5 0 0 0 1.5699999999999998</pose>
+    </include>
+    <include>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Jersey Barrier</uri>
+      <name>barrier_2</name>
+      <pose>-10.4 6.5 0 0 0 1.5699999999999998</pose>
+    </include>
+    <include>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Chair</uri>
+      <name>chair_0</name>
+      <pose>14.300000000000001 -5.5 -6.4230566573786341e-11 -2.8993461128552962e-16 6.5564351824191533e-11 3</pose>
+    </include>
+    <include>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Chair</uri>
+      <name>chair_1</name>
+      <pose>14.300000000000001 -4 -6.4230566552969656e-11 -2.8993916493257319e-16 6.5564351826143097e-11 -2.9999999999999996</pose>
+    </include>
+    <include>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/foldable_chair</uri>
+      <name>fchair_0</name>
+      <pose>-11.5 6.4000000000000004 0 0 0 -1.7999999999999998</pose>
+    </include>
+    <include>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/MaleVisitorOnPhone</uri>
+      <name>Person 1 - Standing</name>
+      <pose>1 -1 0 0 0 1.5699999999999998</pose>
+    </include>
+    <include>
+      <uri>https://fuel.gazebosim.org/1.0/plateau/models/Casual female</uri>
+      <name>Person 2 - Walking</name>
+      <pose>-12 15 0 0 0 0</pose>
+    </include>
+    <include>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/MaleVisitorOnPhone</uri>
+      <name>Person 1 - Standing_1</name>
+      <pose>14.274064901543564 -4.7048320287916585 0 0 0 1.5700000841906603</pose>
+    </include>
+    <include>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/MaleVisitorOnPhone</uri>
+      <name>Person 1 - Standing_2</name>
+      <pose>14.311280484781271 -15.953793541499412 0 0 0 1.5700000841906603</pose>
+    </include>
+    <include>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/MaleVisitorOnPhone</uri>
+      <name>Person 1 - Standing_3</name>
+      <pose>8.0029585319458327 15.124198449196482 0 0 0 1.5700000841906603</pose>
+    </include>
+    <include>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/MaleVisitorOnPhone</uri>
+      <name>Person 1 - Standing_4</name>
+      <pose>8.0031824443378952 -0.042379070626326953 0 0 0 1.5700000841906603</pose>
+    </include>
+    <include>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/MaleVisitorOnPhone</uri>
+      <name>Person 1 - Standing_5</name>
+      <pose>-8.2489508254519617 -15.513012634994384 0 0 0 1.5700000841906603</pose>
+    </include>
+    <include>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/MaleVisitorOnPhone</uri>
+      <name>Person 1 - Standing_6</name>
+      <pose>-11.446297458351587 5.5217154193722546 0 0 0 1.5700000841906603</pose>
+    </include>
+    <include>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/MaleVisitorOnPhone</uri>
+      <name>Person 1 - Standing_7</name>
+      <pose>-6.2616515648771651 14.51703033568706 0 0 0 1.5700000841906603</pose>
+    </include>
+    <include>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/MaleVisitorOnPhone</uri>
+      <name>Person 1 - Standing_8</name>
+      <pose>3.4917183689296967 11.92489453111726 0 0 0 1.5700000841906603</pose>
+    </include>
+    <include>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/MaleVisitorOnPhone</uri>
+      <name>Person 1 - Standing_9</name>
+      <pose>3.3779246895417918 24.019349842597205 0 0 0 1.5700000841906603</pose>
+    </include>
+    <include>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/MaleVisitorOnPhone</uri>
+      <name>Person 1 - Standing_10</name>
+      <pose>-14.359762164126929 -4.842727244736869 0 0 0 1.5700000841906603</pose>
+    </include>
+    <include>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/MaleVisitorOnPhone</uri>
+      <name>Person 1 - Standing_11</name>
+      <pose>14.215715226663235 -12.472052351945809 0 0 0 1.5700000841906603</pose>
+    </include>
+    <include>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/MaleVisitorOnPhone</uri>
+      <name>Person 1 - Standing_12</name>
+      <pose>14.131815952597339 12.161310568269947 0 0 0 1.5700000841906603</pose>
+    </include>
+  </world>
+</sdf>

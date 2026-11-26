@@ -1,0 +1,28 @@
+launch:
+  - arg:
+      name: use_sim_time
+      default: "true"
+  - arg:
+      name: rviz_config
+      default: "$(find-pkg-share autonomous_search_husky)/rviz/config_central.rviz"
+
+  # Nó MQTT da Central
+  - node:
+      pkg: autonomous_search_husky
+      exec: mqtt_bridge_central
+      name: mqtt_bridge_central
+      output: screen
+      param:
+        - name: use_sim_time
+          value: $(var use_sim_time)
+
+  # RViz2 com a configuração da Central
+  - node:
+      pkg: rviz2
+      exec: rviz2
+      name: rviz2_central
+      output: screen
+      args: -d $(var rviz_config)
+      param:
+        - name: use_sim_time
+          value: $(var use_sim_time)
